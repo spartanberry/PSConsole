@@ -93,7 +93,7 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
         if ($res.ok) {
             $WebEvent.Session.Data.user = @{ username=$res.username; role=$res.role; type=$res.type }
             Write-Audit $res.username $res.role 'login' '' @{} 'success' 0 $res.type
-            Move-PodeResponseUrl -Url '/'
+            Move-PodeResponseUrl -Url '/dashboard'   # Dashboard is the default landing for both roles
         } else {
             Write-Audit $b.username 'n/a' 'login' '' @{} 'fail' 0 $res.reason
             Move-PodeResponseUrl -Url '/login?e=Invalid+credentials+or+no+assigned+role'
@@ -142,7 +142,9 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
             try {
                 $r = Invoke-ManagedScript -Path (Join-Path $scriptDir '02-Get-PasswordsExpiring.ps1') -Parameters @{ Days = 7 } -TimeoutSec 20
                 if ($r.ok) {
-                    $rows = @($r.data) | Sort-Object DaysLeft
+                    # Dashboard shows only NOT-yet-expired accounts (positive days left); already-expired
+                    # (negative) are excluded here but still appear when the script is run manually.
+                    $rows = @(@($r.data) | Where-Object { [double]$_.DaysLeft -gt 0 } | Sort-Object DaysLeft)
                     if ($rows.Count) {
                         $pwHtml = ($rows | ForEach-Object {
                             $exp = try { ([datetime]$_.Expires).ToString('MM/dd/yyyy') } catch { [string]$_.Expires }

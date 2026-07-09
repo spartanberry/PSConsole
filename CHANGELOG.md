@@ -2,6 +2,15 @@
 
 All notable changes to PSConsole. Versions follow the `VERSION` file.
 
+## [1.5.1] - 2026-07-09
+
+### Changed
+- **Dashboard is now the default landing** after sign-in for both admin and helpdesk (login redirects
+  to `/dashboard` instead of the Run page). Run Scripts remains its own tab at `/`.
+- **Dashboard "Passwords expiring within 7 days" now excludes already-expired accounts** (shows only
+  positive days-left). Already-expired users still appear when `02-Get-PasswordsExpiring.ps1` is run
+  manually from the Run page - the filter is dashboard-only.
+
 ## [1.5.0] - 2026-07-09
 
 ### Changed
