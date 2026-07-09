@@ -102,10 +102,10 @@ function Get-AppChrome {
     param([string]$Active, $User, [string]$Title, [string]$Subtitle = '', [bool]$HasLogo = $false)
     $role = [string]$User.role
     $items = @(
-        @{ href='/dashboard';           key='dashboard';    label='Dashboard';     icon=$script:PSCIcons.dashboard;    show=($role -eq 'admin') }
+        @{ href='/dashboard';           key='dashboard';    label='Dashboard';     icon=$script:PSCIcons.dashboard;    show=$true }
         @{ href='/';                    key='run';          label='Run Scripts';   icon=$script:PSCIcons.run;          show=$true }
-        @{ href='/users/new';           key='create';       label='Create User';   icon=$script:PSCIcons.create;       show=($role -eq 'admin') }
-        @{ href='/users/onboarding';    key='onboarding';   label='Onboarding';    icon=$script:PSCIcons.onboarding;   show=($role -eq 'admin') }
+        @{ href='/users/new';           key='create';       label='Create User';   icon=$script:PSCIcons.create;       show=$true }
+        @{ href='/users/onboarding';    key='onboarding';   label='Onboarding';    icon=$script:PSCIcons.onboarding;   show=$true }
         @{ href='/users/decommission';  key='decommission'; label='Decommission';  icon=$script:PSCIcons.decommission; show=$true }
         @{ href='/admin/config';        key='config';       label='Config';        icon=$script:PSCIcons.config;       show=($role -eq 'admin') }
         @{ href='/?view=audit';         key='audit';        label='Audit';         icon=$script:PSCIcons.audit;        show=($role -eq 'admin') }

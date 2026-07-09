@@ -115,9 +115,9 @@ function Test-Authorized([string]$Role, [string]$Action) {
     # actions: run, view-history, upload, configure, create-user, decommission-user, onboarding-run
     switch ($Role) {
         'admin'    { return $true }
-        # Helpdesk can run scripts, view history, and decommission users. Add 'create-user' here to
-        # also let helpdesk create accounts.
-        'helpdesk' { return ($Action -in @('run','view-history','decommission-user')) }
+        # Helpdesk: run scripts, create + onboard + decommission users, and the overview dashboard.
+        # Deliberately NO 'view-history' (Audit) and NO 'configure' (Config) - admin-only.
+        'helpdesk' { return ($Action -in @('run','create-user','decommission-user')) }
         default    { return $false }
     }
 }

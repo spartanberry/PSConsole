@@ -2,6 +2,25 @@
 
 All notable changes to PSConsole. Versions follow the `VERSION` file.
 
+## [1.5.0] - 2026-07-09
+
+### Changed
+- **Helpdesk access broadened.** Helpdesk now sees every left-nav tab **except Config and Audit**:
+  Dashboard, Run Scripts, Create User, Onboarding, Decommission. RBAC updated to match - helpdesk gains
+  `create-user` (covers Create + Onboarding) and now reaches the Dashboard; it still has **no**
+  `view-history` (Audit) or `configure` (Config), so those stay admin-only and are blocked at the route,
+  not just hidden.
+- **Role-aware Dashboard.** Admins keep the "Recent activity" (audit) panel. Helpdesk instead get two
+  read-only panels: **Passwords expiring within 7 days** (`02-Get-PasswordsExpiring.ps1`) and **Recent
+  failed Entra sign-ins (last 10)** (`18-Get-EntraSignInFailures.ps1`). The summary cards (onboarding
+  queue, script count, quick actions) stay for both. Widgets render server-side with a short timeout and
+  degrade gracefully (e.g. if the Graph read app isn't configured); viewing the dashboard writes no audit
+  record.
+
+### Fixed
+- The Entra report scripts (10-19) pointed to a non-existent `Set-GraphCredentials.ps1` in their
+  "Graph config not found" error; corrected to `Set-GraphCredential.ps1` (the helper added in 1.4.0).
+
 ## [1.4.0] - 2026-07-09
 
 UI facelift toward a PowerShell-Universal-style look: a light/dark theme with a persistent toggle and
@@ -23,6 +42,13 @@ read-only service-account model are unchanged.
   without editing code: optionally imports a `.pfx`, validates it (private key, expiry, hostname/SAN),
   grants the service account read on the private key, sets `certThumbprint`, restarts the service, and
   verifies the served cert. Documented under *ADMIN-GUIDE - Replacing the TLS certificate*.
+- **`Setup-PSConsole.ps1`** - guided first-run setup at the install root. Creates the local admin login
+  (PBKDF2, same scheme as the app), and writes `config.json` (AD/LDAP auth + role groups + optional cert
+  thumbprint) and `provision.json` (UPN suffix + disabled OU + a safe `enabled:false` skeleton), backing
+  up any existing files. Points to the remaining helpers (cert, cloud, EXO, SMTP, service).
+- **`graph-setup/Set-GraphCredential.ps1`** - the previously-missing helper for the Graph **read** app
+  (`graph.config.json`), mirroring the write/EXO/SMTP helpers (DPAPI LocalMachine, prompts for the secret,
+  verifies the decrypt round-trips).
 - **Distribution scrubbing** (`tools/Get-DistScrub.ps1`, `tools/Build-DistZip.ps1`): shipped artifacts
   (the dist zip and the repo publish) now pass text files through a scrubber that replaces this org's
   real domain/host names with generic placeholders, so new users on another domain never see them. The

@@ -109,20 +109,86 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
         Write-PodeViewResponse -Path 'dashboard' -Data @{ user=$u; scripts=$scripts; head=$chrome.head; open=$chrome.open; close=$chrome.close }
     }
 
-    # Admin landing / overview dashboard (helpdesk can be added later by relaxing the role check).
+    # Overview dashboard - available to admin AND helpdesk. Admins see recent audit activity; helpdesk
+    # see "passwords expiring (7d)" + "recent failed Entra sign-ins" instead (no audit access).
     Add-PodeRoute -Method Get -Path '/dashboard' -ScriptBlock {
         if (-not (Require 'helpdesk' 'run' $WebEvent)) { return }
         $u = $WebEvent.Session.Data.user
-        if ($u.role -ne 'admin') { Set-PodeResponseStatus -Code 403; Write-PodeTextResponse -Value 'Admin only'; return }
+        $scriptDir = $using:ScriptDir
         $q = @(Get-Store onboarding)
         $pending = @($q | Where-Object { $_.cloudStatus -ne 'complete' }).Count
-        $scriptCount = @(Get-ChildItem $using:ScriptDir -Filter *.ps1).Count
-        $recentRows = (@(Get-AuditTail 8) | ForEach-Object {
-            $ts = try { ([datetime]$_.ts).ToString('MM/dd/yyyy h:mm tt') } catch { [string]$_.ts }
-            "<tr><td>$(ConvertTo-PSCEncoded $ts)</td><td>$(ConvertTo-PSCEncoded ([string]$_.user))</td><td>$(ConvertTo-PSCEncoded ([string]$_.action))</td><td>$(ConvertTo-PSCEncoded ([string]$_.script))</td><td>$(ConvertTo-PSCEncoded ([string]$_.status))</td></tr>"
-        }) -join ''
+        $scriptCount = @(Get-ChildItem $scriptDir -Filter *.ps1).Count
+
+        if ($u.role -eq 'admin') {
+            $recentRows = (@(Get-AuditTail 8) | ForEach-Object {
+                $ts = try { ([datetime]$_.ts).ToString('MM/dd/yyyy h:mm tt') } catch { [string]$_.ts }
+                "<tr><td>$(ConvertTo-PSCEncoded $ts)</td><td>$(ConvertTo-PSCEncoded ([string]$_.user))</td><td>$(ConvertTo-PSCEncoded ([string]$_.action))</td><td>$(ConvertTo-PSCEncoded ([string]$_.script))</td><td>$(ConvertTo-PSCEncoded ([string]$_.status))</td></tr>"
+            }) -join ''
+            $lower = @"
+<div class="card">
+  <h3>Recent activity</h3>
+  <div style="overflow-x:auto"><table>
+    <tr><th>When</th><th>User</th><th>Action</th><th>Target</th><th>Status</th></tr>
+    $recentRows
+  </table></div>
+  <div class="note" style="margin-top:10px"><a href="/?view=audit">Open full audit &rarr;</a></div>
+</div>
+"@
+        }
+        else {
+            # Helpdesk widgets - run the read-only scripts directly (short timeout; failures degrade
+            # gracefully). No Write-Audit here: viewing the dashboard is not a script "run".
+            $pwHtml = ''
+            try {
+                $r = Invoke-ManagedScript -Path (Join-Path $scriptDir '02-Get-PasswordsExpiring.ps1') -Parameters @{ Days = 7 } -TimeoutSec 20
+                if ($r.ok) {
+                    $rows = @($r.data) | Sort-Object DaysLeft
+                    if ($rows.Count) {
+                        $pwHtml = ($rows | ForEach-Object {
+                            $exp = try { ([datetime]$_.Expires).ToString('MM/dd/yyyy') } catch { [string]$_.Expires }
+                            "<tr><td>$(ConvertTo-PSCEncoded ([string]$_.DisplayName))<br><span class='note'>$(ConvertTo-PSCEncoded ([string]$_.SamAccountName))</span></td><td>$(ConvertTo-PSCEncoded ([string]$_.Email))</td><td>$exp</td><td>$(ConvertTo-PSCEncoded ([string]$_.DaysLeft))</td></tr>"
+                        }) -join ''
+                    } else { $pwHtml = "<tr><td colspan='4' class='note'>No passwords expiring in the next 7 days.</td></tr>" }
+                } else { $pwHtml = "<tr><td colspan='4' class='note'>Unavailable: $(ConvertTo-PSCEncoded ([string]$r.error))</td></tr>" }
+            } catch { $pwHtml = "<tr><td colspan='4' class='note'>Unavailable.</td></tr>" }
+
+            # Last 10 failed sign-ins: query Graph directly for just the newest page of FAILURES
+            # (server-side filter + top 10, no auto-paging) - ~2s vs 30s+ for scanning all sign-ins.
+            $failHtml = ''
+            try {
+                $tok = Get-GraphToken
+                $gh  = @{ Authorization = "Bearer $tok"; ConsistencyLevel = 'eventual' }
+                $resp = Invoke-RestMethod -Headers $gh -TimeoutSec 15 -Uri "https://graph.microsoft.com/v1.0/auditLogs/signIns?`$filter=status/errorCode ne 0&`$top=10"
+                $rows = @($resp.value)
+                if ($rows.Count) {
+                    $failHtml = ($rows | ForEach-Object {
+                        $t   = try { ([datetime]$_.createdDateTime).ToString('MM/dd/yyyy h:mm tt') } catch { [string]$_.createdDateTime }
+                        $loc = (@($_.location.city, $_.location.countryOrRegion) | Where-Object { $_ }) -join ', '
+                        "<tr><td>$t</td><td>$(ConvertTo-PSCEncoded ([string]$_.userPrincipalName))</td><td>$(ConvertTo-PSCEncoded ([string]$_.status.failureReason))</td><td>$(ConvertTo-PSCEncoded ([string]$_.ipAddress))</td><td>$(ConvertTo-PSCEncoded ([string]$loc))</td></tr>"
+                    }) -join ''
+                } else { $failHtml = "<tr><td colspan='5' class='note'>No recent failed sign-ins.</td></tr>" }
+            } catch { $failHtml = "<tr><td colspan='5' class='note'>Unavailable: $(ConvertTo-PSCEncoded ([string]$_.Exception.Message))</td></tr>" }
+
+            $lower = @"
+<div class="card">
+  <h3>Passwords expiring within 7 days</h3>
+  <div style="overflow-x:auto"><table>
+    <tr><th>User</th><th>Email</th><th>Expires</th><th>Days left</th></tr>
+    $pwHtml
+  </table></div>
+</div>
+<div class="card">
+  <h3>Recent failed Entra sign-ins (last 10)</h3>
+  <div style="overflow-x:auto"><table>
+    <tr><th>When</th><th>User</th><th>Reason</th><th>IP</th><th>Location</th></tr>
+    $failHtml
+  </table></div>
+</div>
+"@
+        }
+
         $chrome = Get-AppChrome -Active 'dashboard' -User $u -Title 'Dashboard' -Subtitle 'Overview' -HasLogo ([bool]((Get-Store config).logoFile))
-        Write-PodeViewResponse -Path 'admin-dashboard' -Data @{ user=$u; pending=$pending; scriptCount=$scriptCount; recentRows=$recentRows; head=$chrome.head; open=$chrome.open; close=$chrome.close }
+        Write-PodeViewResponse -Path 'admin-dashboard' -Data @{ user=$u; pending=$pending; scriptCount=$scriptCount; lower=$lower; head=$chrome.head; open=$chrome.open; close=$chrome.close }
     }
 
     # ---- User provisioning (admin-only for now; Phase 1 = on-prem AD create) ----
