@@ -1,0 +1,12 @@
+$($data.head)
+<body class="login">
+<div class="card">
+  $(if($data.hasLogo){'<img src="/logo" alt="PSConsole" style="max-height:60px;max-width:260px;display:block;margin:0 auto 16px">'}else{'<h2 style="text-align:center;margin:0 0 16px">PSConsole</h2>'})
+  <div class="err" style="min-height:16px;margin-bottom:4px">$($data.error)</div>
+  <form method="post" action="/login">
+    <input name="username" placeholder="Username (local admin or UPN)" autofocus>
+    <input name="password" type="password" placeholder="Password">
+    <button type="submit">Sign in</button>
+  </form>
+</div>
+</body></html>

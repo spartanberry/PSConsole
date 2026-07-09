@@ -1,0 +1,50 @@
+$($data.head)
+$($data.open)
+
+$(if(-not $data.writeReady){'<div class="alert warn"><b>Graph-write app not configured.</b> Cloud groups + license can''t be applied yet. Create the <b>PSConsole-Graph-Write</b> app registration and run <code>graph-setup\Set-GraphWriteCredential.ps1</code> on this server.</div>'})
+$(if(-not $data.exoReady){'<div class="alert warn"><b>Exchange Online not configured.</b> Mail-enabled security groups + distribution lists will be listed as "needs manual". Set up the <b>PSConsole-EXO-Write</b> app + cert and run <code>graph-setup\Set-ExoConfig.ps1</code> to automate them.</div>'})
+
+<div class="card">
+  <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+    <button onclick="runNow()">Run onboarding now</button>
+    <span id="runmsg" class="note"></span>
+    <span class="note" style="margin-left:auto">$(if($data.autoRun){'Auto-processing is <b>ON</b> (every 5 min).'}else{'Auto-processing is off - use Run now, or set <code>onboardingAutoRun</code> true in Config &rsaquo; Department mapping.'})</span>
+  </div>
+
+  <table>
+  <tr><th>User</th><th>Dept / Title</th><th>Status</th><th>Added (Graph)</th><th>Auto (dynamic)</th><th>Needs manual / failed</th><th>License</th><th>Last run</th></tr>
+  $(if(-not $data.queue -or @($data.queue).Count -eq 0){'<tr><td colspan="8" class="note">No onboarding records yet. They appear here after a user is created (once provisioning is enabled).</td></tr>'})
+  $(foreach($r in @($data.queue)){
+    $st = "$($r.cloudStatus)"
+    $addedList = @()
+    if($r.groupsAdded){ $addedList += @($r.groupsAdded) }
+    if($r.groupsExo){ $addedList += (@($r.groupsExo) | ForEach-Object { "$_ (EXO)" }) }
+    $added  = ($addedList -join ', ')
+    $auto   = if($r.groupsAuto){ (@($r.groupsAuto) -join ', ') } else { '' }
+    $manual = if($r.groupsManual){ (@($r.groupsManual) | ForEach-Object { "$_ (mail-enabled)" }) } else { @() }
+    $failed = if($r.groupsFailed){ @($r.groupsFailed) } else { @() }
+    $attn   = (@($manual + $failed) -join '; ')
+    "<tr><td>$(ConvertTo-PSCEncoded $r.displayName)<br><span class=`"note`">$(ConvertTo-PSCEncoded $r.upn)</span></td>" +
+    "<td>$(ConvertTo-PSCEncoded $r.department)<br><span class=`"note`">$(ConvertTo-PSCEncoded $r.title)</span></td>" +
+    "<td><span class=`"pill s-$st`">$st</span><br><span class=`"note`">$(ConvertTo-PSCEncoded $r.note)</span></td>" +
+    "<td class=`"ok`">$(ConvertTo-PSCEncoded $added)</td>" +
+    "<td class=`"auto`">$(ConvertTo-PSCEncoded $auto)</td>" +
+    "<td class=`"man`">$(ConvertTo-PSCEncoded $attn)</td>" +
+    "<td>$(ConvertTo-PSCEncoded "$($r.licenseStatus)")</td>" +
+    "<td class=`"note`">$(ConvertTo-PSCEncoded "$($r.lastRun)")</td></tr>"
+  })
+  </table>
+</div>
+
+<script>
+async function runNow(){
+  const m=document.getElementById('runmsg');m.textContent='running...';
+  try{
+    const r=await fetch('/users/onboarding/run',{method:'POST'});const j=await r.json();
+    m.textContent='processed '+j.processed+' - completed '+j.completed+', partial '+j.partial+', waiting for sync '+j.waiting+(j.errors&&j.errors.length?(' - errors: '+j.errors.join('; ')):'');
+    setTimeout(()=>location.reload(),1200);
+  }catch(e){m.textContent='run failed: '+e;}
+}
+</script>
+
+$($data.close)

@@ -1,0 +1,83 @@
+$($data.head)
+$($data.open)
+
+$(if(-not $data.enabled){'<div class="alert warn"><b>Preview mode.</b> Provisioning is turned OFF, so decommission only looks up and simulates - it writes nothing. Turn it on under <a href="/admin/deptmap">Config &rsaquo; Department mapping</a>.</div>'})
+<div class="alert err"><b>This is destructive.</b> On confirm, PSConsole disables the account, strips its on-prem group memberships, and moves it to <code>$($data.disabledOu)</code>. ADSync then removes it from Entra (and cloud groups) on its next cycle.</div>
+
+<div class="card">
+  <h3>Find the account</h3>
+  <div class="grid2">
+    <div><label>Username to decommission <span class="note">- sAMAccountName, UPN, or display name</span></label><input id="username" placeholder="e.g. ttester" autofocus></div>
+    <div style="align-self:end"><button class="secondary" onclick="lookup()">Look up</button></div>
+  </div>
+
+  <div id="planCard" style="display:none"><div class="fold"><h3 style="border:0;margin:0 0 12px;padding:0">Account</h3><div id="plan"></div></div></div>
+
+  <div id="confirmFold" class="fold" style="display:none">
+    <h3 style="border:0;padding:0">Confirm &amp; decommission</h3>
+    <p class="note">This runs in AD as <b>you</b> - your credentials are used for the write and never stored.</p>
+    <div class="grid2">
+      <div><label>Your AD username</label><input id="opUser" placeholder="DOMAIN\you or you@domain" autocomplete="off"></div>
+      <div><label>Your AD password</label><input id="opPassword" type="password" autocomplete="off"></div>
+    </div>
+    <label style="display:inline-flex;align-items:center;gap:8px;font-weight:normal;color:var(--err);margin-top:14px">
+      <input type="checkbox" id="confirm" style="width:auto"> I understand this will <b>disable</b> the account and move it to the Disabled Accounts OU.
+    </label>
+    <div><button class="danger" id="goBtn" onclick="run()">Decommission user</button></div>
+  </div>
+
+  <div id="resultCard" style="display:none"><div class="fold"><div id="result"></div></div></div>
+</div>
+
+<script>
+var LAST=null;
+function val(id){return document.getElementById(id).value;}
+function esc(s){return (s==null?'':String(s)).replace(/[&<>]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c];});}
+function fd(obj){var f=new FormData();for(var k in obj){f.append(k,obj[k]);}return f;}
+function row(k,v){return '<tr><td class="k">'+k+'</td><td>'+v+'</td></tr>';}
+function errList(errs){return '<ul class="err">'+errs.map(function(e){return '<li>'+esc(e)+'</li>';}).join('')+'</ul>';}
+function planRows(p){
+  var grps=(p.onPremGroups&&p.onPremGroups.length)?p.onPremGroups.map(esc).join(', '):'<span class="note">none</span>';
+  return '<table>'+
+   row('Display name',esc(p.displayName))+
+   row('Username',esc(p.sam))+
+   row('Sign-in (UPN)',esc(p.upn))+
+   row('Current OU',esc(p.ou))+
+   row('Currently enabled',p.enabled?'yes':'<span class="note">already disabled</span>')+
+   row('On-prem groups to remove',grps)+
+   '</table>';
+}
+function resetConfirm(){document.getElementById('confirmFold').style.display='none';document.getElementById('confirm').checked=false;LAST=null;}
+async function lookup(){
+  resetConfirm();
+  var r=await fetch('/users/decommission/preview',{method:'POST',body:fd({username:val('username')})});
+  var j=await r.json();
+  document.getElementById('planCard').style.display='block';
+  var h=(j.errors&&j.errors.length?errList(j.errors):'')+(j.plan&&j.plan.found?planRows(j.plan):'');
+  document.getElementById('plan').innerHTML=h;
+  if(j.ok&&j.plan&&j.plan.found){LAST=j.plan;document.getElementById('confirmFold').style.display='block';}
+}
+async function run(){
+  if(!LAST){alert('Look up an account first.');return;}
+  if(!document.getElementById('confirm').checked){alert('Tick the confirmation box to proceed.');return;}
+  var btn=document.getElementById('goBtn');btn.disabled=true;
+  var body={username:val('username'),opUser:val('opUser'),opPassword:val('opPassword'),confirm:document.getElementById('confirm').checked?'true':'false'};
+  var r=await fetch('/users/decommission/run',{method:'POST',body:fd(body)});
+  var j=await r.json();
+  var rc=document.getElementById('resultCard');rc.style.display='block';
+  var h='';
+  if(j.errors&&j.errors.length){h=errList(j.errors);}
+  else if(j.preview){h='<div class="ok">Preview OK - nothing was changed.</div><p class="note">'+esc(j.message)+'</p>';}
+  else if(j.ok){
+    h='<div class="ok">Decommissioned. Now at: '+esc(j.dn)+'</div>';
+    h+='<p class="note">Removed from on-prem groups: '+((j.groupsRemoved&&j.groupsRemoved.length)?j.groupsRemoved.map(esc).join(', '):'none')+'</p>';
+    if(j.groupsFailed&&j.groupsFailed.length){h+='<p class="err">Some group removals failed: '+j.groupsFailed.map(esc).join(', ')+'</p>';}
+    h+='<p class="note">Entra removal follows on the next ADSync cycle.</p>';
+    resetConfirm();
+  } else {h='<div class="err">Failed: '+esc(j.error)+'</div>';}
+  document.getElementById('result').innerHTML=h;
+  btn.disabled=false;
+}
+</script>
+
+$($data.close)

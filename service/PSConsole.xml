@@ -1,0 +1,10 @@
+<service>
+  <id>PSConsole</id>
+  <name>PSConsole</name>
+  <description>PSConsole web host</description>
+  <executable>C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe</executable>
+  <arguments>-NoProfile -ExecutionPolicy Bypass -File "E:\Apps\PSConsole\app\Start-PSConsole.ps1" -Port 443 -CertThumbprint 6D1B442946CF12DAC1F12B9857DA8B62191AF46E</arguments>
+  <startmode>Automatic</startmode>
+  <onfailure action="restart" delay="60 sec"/>
+  <log mode="roll-by-size"><sizeThreshold>10240</sizeThreshold><keepFiles>3</keepFiles></log>
+</service>

@@ -1,0 +1,36 @@
+$($data.head)
+$($data.open)
+
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px">
+  <div class="card">
+    <div class="note">Onboarding queue</div>
+    <div style="font-size:30px;font-weight:600;margin:6px 0 2px">$($data.pending)</div>
+    <div class="note">pending cloud onboarding &middot; <a href="/users/onboarding">view</a></div>
+  </div>
+  <div class="card">
+    <div class="note">Scripts available</div>
+    <div style="font-size:30px;font-weight:600;margin:6px 0 2px">$($data.scriptCount)</div>
+    <div class="note">in the catalog &middot; <a href="/">run</a></div>
+  </div>
+  <div class="card">
+    <div class="note" style="margin-bottom:8px">Quick actions</div>
+    <div style="display:flex;flex-direction:column;gap:7px">
+      <a href="/users/new">&rarr; Create user</a>
+      <a href="/users/decommission">&rarr; Decommission user</a>
+      <a href="/users/onboarding">&rarr; Run onboarding</a>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h3>Recent activity</h3>
+  <div style="overflow-x:auto">
+    <table>
+      <tr><th>When</th><th>User</th><th>Action</th><th>Target</th><th>Status</th></tr>
+      $($data.recentRows)
+    </table>
+  </div>
+  <div class="note" style="margin-top:10px"><a href="/?view=audit">Open full audit &rarr;</a></div>
+</div>
+
+$($data.close)

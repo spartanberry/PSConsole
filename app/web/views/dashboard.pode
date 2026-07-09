@@ -1,0 +1,84 @@
+$($data.head)
+$($data.open)
+
+<div class="card" style="max-width:880px">
+  <h3>Run a script</h3>
+  <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
+    <div><label>Script</label><select id="script">$(foreach($s in $data.scripts){"<option>$s</option>"})</select></div>
+    <div style="flex:1;min-width:260px"><label>Parameters <span class="note">- Key=Value;Key2=Value2</span></label><input id="params" placeholder="e.g. Days=30;GroupName=Sales" style="width:100%"></div>
+    <div><button onclick="run()">Run</button></div>
+  </div>
+  $(if($data.user.role -eq 'admin'){'<div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)" class="note">Upload a .ps1 to the catalog: <input type="file" id="f" accept=".ps1" style="padding:5px"> <button class="secondary" onclick="upload()">Upload</button></div>'})
+</div>
+
+<div id="out"></div>
+
+<script>
+function aesc(s){return (s==null?'':String(s)).replace(/[&<>]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c];});}
+function acell(v){ if(v==null)return ''; if(typeof v==='object')return aesc(JSON.stringify(v)); return aesc(String(v)); }
+function fmtTs(v){
+ var d=new Date(v); if(isNaN(d.getTime()))return acell(v);
+ var mm=('0'+(d.getMonth()+1)).slice(-2), dd=('0'+d.getDate()).slice(-2), yyyy=d.getFullYear();
+ var h=d.getHours(), ap=h>=12?'PM':'AM'; h=h%12; if(h===0)h=12;
+ var mi=('0'+d.getMinutes()).slice(-2);
+ return mm+'/'+dd+'/'+yyyy+' '+h+':'+mi+' '+ap;
+}
+async function run(){
+ const sel=document.getElementById('script').value; window.__script=sel;
+ const fd=new FormData(); fd.append('script',sel);
+ document.getElementById('params').value.split(';').filter(x=>x).forEach(p=>{const[k,v]=p.split('=');fd.append('p_'+k.trim(),(v||'').trim());});
+ const r=await fetch('/run',{method:'POST',body:fd}); const j=await r.json(); render(j);
+}
+function render(j){
+ const o=document.getElementById('out'); window.__rows=(j.rows||[]);
+ if(!j.ok&&j.error&&(!j.rows||!j.rows.length)){o.innerHTML='<div class="card"><pre style="color:var(--err);white-space:pre-wrap;margin:0">'+aesc(j.error)+'</pre></div>';return;}
+ if(!j.rows||!j.rows.length){o.innerHTML='<div class="card"><p class="note" style="margin:0">No rows.</p></div>';return;}
+ const cols=Object.keys(j.rows[0]);
+ let h='<div class="card"><div style="overflow-x:auto"><table><tr>'+cols.map(c=>'<th>'+aesc(c)+'</th>').join('')+'</tr>';
+ j.rows.forEach(r=>{h+='<tr>'+cols.map(c=>'<td>'+acell(r[c])+'</td>').join('')+'</tr>';}); h+='</table></div>';
+ h+='<div style="margin-top:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">';
+ h+='<button onclick=\'csv('+JSON.stringify(JSON.stringify(j.rows))+')\'>Export CSV</button>';
+ h+='<span class="note">|</span><input id="emailTo" placeholder="email address" style="width:210px"> <button class="secondary" onclick="emailResults()">Email</button> <span id="emailStatus" style="font-size:12px"></span>';
+ h+='</div></div>';
+ o.innerHTML=h;
+}
+async function emailResults(){
+ const to=(document.getElementById('emailTo').value||'').trim(); const st=document.getElementById('emailStatus');
+ if(!to){st.style.color='var(--err)';st.textContent='Enter an email address.';return;}
+ const fd=new FormData();fd.append('to',to);fd.append('script',window.__script||'results');fd.append('rows',JSON.stringify(window.__rows||[]));
+ st.style.color='var(--muted)';st.textContent='Sending...';
+ try{const r=await fetch('/email-results',{method:'POST',body:fd});const j=await r.json();
+  st.style.color=j.ok?'var(--ok-fg)':'var(--err)';st.textContent=j.ok?('Sent to '+to):('Failed: '+(j.error||'error'));
+ }catch(e){st.style.color='var(--err)';st.textContent='Failed to send.';}
+}
+function csv(s){const rows=JSON.parse(s);const cols=Object.keys(rows[0]);
+ const c=[cols.join(',')].concat(rows.map(r=>cols.map(k=>'"'+String(r[k]??'').replace(/"/g,'""')+'"').join(','))).join('\n');
+ const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([c],{type:'text/csv'}));a.download='export.csv';a.click();}
+async function upload(){const f=document.getElementById('f').files[0];if(!f){alert('Choose a .ps1 file first.');return;}
+ const fd=new FormData();fd.append('script',f);
+ const r=await fetch('/upload',{method:'POST',body:fd});
+ if(r.redirected){location=r.url;return;}
+ if(r.ok){location='/';return;}
+ alert('Upload failed ('+r.status+'): '+(await r.text()));}
+async function loadAudit(from,to){
+ let url='/admin/audit';const qs=[];
+ if(from)qs.push('from='+encodeURIComponent(from));
+ if(to)qs.push('to='+encodeURIComponent(to));
+ if(qs.length)url+='?'+qs.join('&');
+ const r=await fetch(url);const j=await r.json();
+ renderAudit(j.rows||[],from||'',to||'');
+}
+function applyAuditFilter(){loadAudit(document.getElementById('afrom').value,document.getElementById('ato').value);}
+function renderAudit(rows,from,to){
+ const o=document.getElementById('out');window.__script='audit-log';window.__rows=rows;
+ let bar='<div class="card"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px"><b style="margin-right:4px">Audit</b> From <input type="datetime-local" id="afrom" value="'+aesc(from)+'"> To <input type="datetime-local" id="ato" value="'+aesc(to)+'"> <button class="secondary" onclick="applyAuditFilter()">Apply</button> <button class="secondary" onclick="loadAudit()">Clear</button> <span class="note">'+rows.length+' event(s), newest first'+((from||to)?' (filtered)':'')+'</span></div></div>';
+ if(!rows.length){o.innerHTML=bar+'<div class="card"><p class="note" style="margin:0">No events'+((from||to)?' in that range':'')+'.</p></div>';return;}
+ const cols=Object.keys(rows[0]);
+ let h=bar+'<div class="card"><div style="overflow-x:auto"><table><tr>'+cols.map(c=>'<th>'+aesc(c)+'</th>').join('')+'</tr>';
+ rows.forEach(r=>{h+='<tr>'+cols.map(c=>'<td>'+(c==='ts'?fmtTs(r[c]):acell(r[c]))+'</td>').join('')+'</tr>';});
+ h+='</table></div><div style="margin-top:12px"><button onclick=\'csv('+JSON.stringify(JSON.stringify(rows))+')\'>Export CSV</button></div></div>';
+ o.innerHTML=h;
+}
+(function(){try{var p=new URLSearchParams(location.search);if(p.get('view')==='audit')loadAudit();}catch(e){}})();
+</script>
+$($data.close)
