@@ -1,0 +1,43 @@
+$($data.head)
+$($data.open)
+
+$(if($data.msg){ if($data.msg -eq 'Saved'){'<div class="alert ok">Saved.</div>'}else{'<div class="alert err">'+$data.msg+'</div>'} })
+
+<div class="card">
+  <h3>Department mapping &amp; provisioning</h3>
+  <p class="note">Controls what <b>Create User</b> does. <code>enabled</code> is the master on/off for real AD creation. <code>upnSuffix</code> is the sign-in/email domain (e.g. <code>example.com</code>). <code>supervisorGroup</code> is the Entra group whose members populate the Supervisor dropdown; <code>supervisorGroups</code> are added only when the "Add to Supervisors group" box is ticked. <code>licenseSkuId</code> is the license assigned during cloud onboarding (M365 E5 = <code>06ebc4ee-1bb5-47dd-8120-11324bc54e06</code>; blank = none), <code>usageLocation</code> is set before licensing, <code>onboardingAutoRun</code> turns on the every-5-min auto-processor, and <code>disabledOu</code> is where decommissioned users are moved. <code>baseGroups</code> are added to <b>every</b> new user; <code>onCallGroup</code> to everyone <b>except</b> <code>onCallExceptDepartments</code>. Each department adds its own <code>cloudGroups</code> (name must match the form exactly), a target <code>ou</code> (full DN), and optional <code>jobTitles</code> (each a checkbox that can <code>addGroups</code> / <code>removeGroups</code>). Final membership = base + On Call + department + checked job-title groups, minus that title's <code>removeGroups</code>, de-duplicated. All are cloud-only Entra groups applied after Entra Connect sync.</p>
+  <form method="post" action="/admin/deptmap">
+    <label>Settings (JSON)</label>
+    <textarea name="json" rows="22" spellcheck="false">$($data.json)</textarea>
+    <button type="submit">Save</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3>Schema example</h3>
+  <pre>{
+  "enabled": false,
+  "upnSuffix": "example.com",
+  "supervisorGroup": "Supervisors",
+  "supervisorGroups": ["Supervisors", "Supervisors_TRD"],
+  "licenseSkuId": "06ebc4ee-1bb5-47dd-8120-11324bc54e06",
+  "usageLocation": "US",
+  "onboardingAutoRun": true,
+  "disabledOu": "OU=Disabled Accounts,DC=example,DC=org",
+  "baseGroups": ["AllStaff", "IS Calendar", "TRD_Staff"],
+  "onCallGroup": "On Call",
+  "onCallExceptDepartments": ["Facilities", "Clerical"],
+  "departments": [
+    {
+      "name": "Nursing",
+      "ou": "OU=Nursing,OU=Staff,DC=example,DC=org",
+      "cloudGroups": ["Nursing-Staff"],
+      "jobTitles": [
+        { "name": "Behavioral Technician", "addGroups": ["BT-Specific-Group"], "removeGroups": ["On Call"] }
+      ]
+    }
+  ]
+}</pre>
+</div>
+
+$($data.close)

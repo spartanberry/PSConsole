@@ -1,0 +1,12 @@
+. $PSScriptRoot\Store.ps1
+. $PSScriptRoot\Auth.ps1
+. $PSScriptRoot\Audit.ps1
+. $PSScriptRoot\Render.ps1
+. $PSScriptRoot\Layout.ps1
+. $PSScriptRoot\Graph.ps1
+. $PSScriptRoot\GraphWrite.ps1
+. $PSScriptRoot\ExchangeOnline.ps1
+. $PSScriptRoot\UserProvision.ps1
+. $PSScriptRoot\Onboarding.ps1
+. $PSScriptRoot\Decommission.ps1
+. $PSScriptRoot\Notify.ps1

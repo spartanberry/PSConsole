@@ -1,0 +1,99 @@
+$($data.head)
+$($data.open)
+
+$(if(-not $data.enabled){'<div class="alert warn"><b>Preview mode.</b> User provisioning is turned OFF, so "Create" only simulates and writes nothing. Turn it on under <a href="/admin/deptmap">Config &rsaquo; Department mapping</a> once AD create-delegation is set up.</div>'})
+$(if(-not $data.departments -or $data.departments.Count -eq 0){'<div class="alert warn">No departments are mapped yet. Add them under <a href="/admin/deptmap">Config &rsaquo; Department mapping</a> before creating users.</div>'})
+
+<div class="card">
+  <h3>New user</h3>
+  <div class="grid2">
+    <div><label>First name</label><input id="firstName" autofocus></div>
+    <div><label>Last name</label><input id="lastName"></div>
+    <div><label>Username (sAMAccountName) <span class="note">- first initial + last name</span></label><input id="username" placeholder="e.g. ttester"></div>
+    <div><label>Department</label><select id="department" onchange="deptChanged()"><option value="">-- select --</option>$(foreach($d in $data.departments){"<option>$d</option>"})</select></div>
+    <div><label>Mobile phone <span class="note">- optional</span></label><input id="mobile" placeholder="(555) 555-5555"></div>
+    <div><label>Supervisor <span class="note">- optional</span></label>$(if($data.hasSupervisors){"<select id=`"manager`"><option value=`"`">-- select supervisor --</option>$($data.supervisorOptions)</select>"}else{"<input id=`"manager`" placeholder=`"UPN, username, or display name`"><span class=`"note`"> (Supervisors group unavailable - type manually)</span>"})</div>
+  </div>
+  <div id="deptData" data-jobs="$($data.deptJobs)" style="display:none"></div>
+  <div id="jobTitlesRow" style="margin-top:8px"></div>
+  <!-- Manual "Add to Supervisors group" toggle. Currently HIDDEN: supervisor job titles now add the
+       Supervisors groups automatically via their addGroups, so this manual override isn't needed. The
+       mechanism (isSupervisor -> supervisorGroups) is left fully wired - remove style="display:none"
+       to bring the checkbox back for a future use case. -->
+  <div id="supervisorRow" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
+    <label style="display:inline-flex;align-items:center;gap:8px;font-weight:normal">
+      <input type="checkbox" id="isSupervisor" style="width:auto"><b>Add to Supervisors group</b>
+      <span class="note">- most new users are NOT supervisors; only check this for actual supervisors</span>
+    </label>
+  </div>
+  <button class="secondary" onclick="preview()">Preview</button>
+
+  <div id="planCard" style="display:none"><div class="fold"><h3 style="border:0;padding:0;margin:0 0 12px">Preview</h3><div id="plan"></div></div></div>
+
+  <div class="fold">
+    <h3 style="border:0;padding:0">Create</h3>
+    <p class="note">Phase 1 creates the account in AD as <b>you</b> (your credentials are used for the write and never stored). Phase 2 (cloud groups + license) is queued and applied after the account syncs to Entra.</p>
+    <div class="grid2">
+      <div><label>Your AD username</label><input id="opUser" placeholder="DOMAIN\you or you@domain" autocomplete="off"></div>
+      <div><label>Your AD password</label><input id="opPassword" type="password" autocomplete="off"></div>
+      <div style="grid-column:1/3"><label>Initial password for the new user (they must change at first logon)</label><input id="newPassword" type="password" autocomplete="off"></div>
+    </div>
+    <button onclick="create()">Create user</button>
+  </div>
+
+  <div id="resultCard" style="display:none"><div class="fold"><div id="result"></div></div></div>
+</div>
+
+<script>
+function val(id){return document.getElementById(id).value;}
+const DEPT_JOBS=(function(){try{let d=JSON.parse(document.getElementById('deptData').dataset.jobs||'[]');if(!Array.isArray(d))d=[d];const m={};d.forEach(function(x){let j=x.jobTitles;if(!j)j=[];if(!Array.isArray(j))j=[j];m[x.name]=j.filter(Boolean);});return m;}catch(e){return {};}})();
+function deptChanged(){
+  const jobs=DEPT_JOBS[val('department')]||[];const row=document.getElementById('jobTitlesRow');
+  if(!jobs.length){row.innerHTML='';return;}
+  row.innerHTML='<label>Job title (optional - adjusts groups for this role)</label>'+
+    jobs.map(function(j){return '<label style="display:inline-flex;align-items:center;gap:6px;margin:0 16px 6px 0;font-weight:normal"><input type="checkbox" class="jobtitle" value="'+esc(j)+'" style="width:auto">'+esc(j)+'</label>';}).join('');
+}
+function selectedJobs(){return Array.from(document.querySelectorAll('.jobtitle:checked')).map(function(c){return c.value;}).join('|');}
+function gather(){var s=document.getElementById('isSupervisor');return {firstName:val('firstName'),lastName:val('lastName'),username:val('username'),department:val('department'),manager:val('manager'),jobTitles:selectedJobs(),mobile:val('mobile'),isSupervisor:(s&&s.checked)?'true':'false'};}
+// Auto-suggest username as first-initial + last name (convention), until the field is edited by hand.
+var _userEdited=false;
+document.getElementById('username').addEventListener('input',function(){_userEdited=true;});
+function autoUser(){if(_userEdited)return;var f=val('firstName').trim(),l=val('lastName').trim();if(!f||!l)return;document.getElementById('username').value=(f[0]+l).toLowerCase().replace(/[^a-z0-9.\-_]/g,'');}
+document.getElementById('firstName').addEventListener('input',autoUser);
+document.getElementById('lastName').addEventListener('input',autoUser);
+function fd(obj){const f=new FormData();for(const k in obj)f.append(k,obj[k]);return f;}
+function esc(s){return (s==null?'':String(s)).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+function planRows(p){
+  return '<table>'+
+   row('Display name',p.displayName)+row('sAMAccountName',p.samAccountName)+row('UPN / sign-in',p.userPrincipalName)+
+   row('Department',p.department)+
+   row('Job title (checked)',(p.jobTitles&&p.jobTitles.length)?p.jobTitles.join(', '):'<span class="note">none</span>')+
+   row('AD title to set',p.title||'<span class="note">none</span>')+
+   row('Mobile phone',p.mobile||'<span class="note">none</span>')+
+   row('Target OU',p.ou||'<span class="err">(none)</span>')+
+   row('Cloud groups',(p.cloudGroups&&p.cloudGroups.length)?p.cloudGroups.join(', '):'<span class="note">none mapped</span>')+
+   row('Supervisor group',p.isSupervisor?'<b>YES</b> - added to Supervisors':'<span class="note">no</span>')+
+   row('License group',p.licenseGroup||'<span class="note">none</span>')+
+   row('Manager',p.manager||'<span class="note">none</span>')+'</table>';
+}
+function row(k,v){return '<tr><td class="k">'+k+'</td><td>'+v+'</td></tr>';}
+function errList(errs){return '<ul class="err">'+errs.map(e=>'<li>'+esc(e)+'</li>').join('')+'</ul>';}
+async function preview(){
+  const r=await fetch('/users/new/preview',{method:'POST',body:fd(gather())});const j=await r.json();
+  document.getElementById('planCard').style.display='block';
+  document.getElementById('plan').innerHTML=(j.errors&&j.errors.length?errList(j.errors):'')+(j.plan?planRows(j.plan):'');
+}
+async function create(){
+  const g=gather();g.opUser=val('opUser');g.opPassword=val('opPassword');g.newPassword=val('newPassword');
+  const r=await fetch('/users/new/create',{method:'POST',body:fd(g)});const j=await r.json();
+  const rc=document.getElementById('resultCard');rc.style.display='block';
+  let h='';
+  if(j.errors&&j.errors.length){h=errList(j.errors);}
+  else if(j.preview){h='<div class="ok">Preview OK - nothing was created.</div>'+planRows(j.plan)+'<p class="note">'+esc(j.message)+'</p>';}
+  else if(j.ok){h='<div class="ok">Created: '+esc(j.dn)+'</div>'+planRows(j.plan)+'<p class="note">Cloud groups/license queued for after Entra sync.</p>';}
+  else{h='<div class="err">Create failed: '+esc(j.error)+'</div>';}
+  document.getElementById('result').innerHTML=h;
+}
+</script>
+
+$($data.close)

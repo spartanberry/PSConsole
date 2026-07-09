@@ -1,0 +1,19 @@
+# Runtime state + SECRETS - never commit. Recreated per-machine (DPAPI secrets are machine-bound).
+data/
+
+# Local agent/session files
+.claude/
+
+# WinSW service logs
+service/*.log
+service/*.out.log
+service/*.err.log
+service/*.wrapper.log
+
+# Build output
+dist/
+
+# General
+*.log
+*.tmp
+*.bak

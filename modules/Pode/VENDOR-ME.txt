@@ -1,0 +1,11 @@
+Pode is NOT bundled in this artifact (it must be vendored once from an
+internet-connected STAGING box, since the target PSCONSOLE01 is offline).
+
+On a staging machine WITH internet, run:
+
+    Save-Module -Name Pode -RequiredVersion 2.* -Path .\_stage
+    Copy the resulting Pode\<version>\* into THIS folder (modules\Pode\),
+    so that modules\Pode\Pode.psd1 exists at this path.
+
+Then re-zip the bundle and transfer to PSCONSOLE01.
+The installer asserts modules\Pode\Pode.psd1 exists and will abort if missing.
