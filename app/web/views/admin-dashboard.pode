@@ -22,15 +22,6 @@ $($data.open)
   </div>
 </div>
 
-<div class="card">
-  <h3>Recent activity</h3>
-  <div style="overflow-x:auto">
-    <table>
-      <tr><th>When</th><th>User</th><th>Action</th><th>Target</th><th>Status</th></tr>
-      $($data.recentRows)
-    </table>
-  </div>
-  <div class="note" style="margin-top:10px"><a href="/?view=audit">Open full audit &rarr;</a></div>
-</div>
+$($data.lower)
 
 $($data.close)

@@ -240,6 +240,7 @@ only run **after** the user has synced.
 | **PSConsole-EXO-Write** | `exo.config.json` | Office 365 Exchange Online: Exchange.ManageAsApp + **Exchange Administrator** role | **certificate** |
 
 Set them up with the helpers in `graph-setup\` (run **on PSCONSOLE01**):
+- `Set-GraphCredential.ps1 -TenantId <g> -ClientId <g>` (READ app; prompts for the secret; DPAPI-encrypts).
 - `Set-GraphWriteCredential.ps1 -TenantId <g> -ClientId <g>` (prompts for the secret; DPAPI-encrypts).
 - `Set-ExoConfig.ps1 -AppId <g> -Organization contoso.onmicrosoft.com -CertThumbprint <t>`.
   Requires the `ExchangeOnlineManagement` module (`Install-Module ExchangeOnlineManagement -Scope
@@ -268,11 +269,13 @@ Set them up with the helpers in `graph-setup\` (run **on PSCONSOLE01**):
 2. Copy the repo's `psconsole\` contents to `E:\apps\PSConsole` (or the versioned zip).
 3. Install a TLS cert; note its thumbprint. Register the WinSW service (`service\PSConsole.xml`) with
    the port + cert thumbprint. Grant `zpsconsole` "Log on as a service".
-4. **Recreate `data\`** (gitignored, so not in the repo):
-   - `config.json` - LDAP settings + role map + cert thumbprint (or set via the Config page).
-   - `users.json` - at least the local `admin` account.
-   - `provision.json` - the department mapping (copy from a backup; contains no secrets).
-   - **Re-run the credential helpers on the new box** to re-create `graph.config.json`,
+4. **Create `data\`** (gitignored, so not in the repo). The fastest path is the guided first-run
+   script from the install root: **`.\Setup-PSConsole.ps1`** - it creates the local admin login and
+   writes `config.json` + `provision.json` (backing up any existing files). Then finish the pieces it
+   points you to:
+   - **Re-run the credential helpers on the new box** to create `graph.config.json`,
      `graph-write.config.json`, `exo.config.json` - the DPAPI secrets are machine-bound and will
      **not** decrypt if copied from the old server. For EXO, install the cert + grant key access.
+   - Install/replace the TLS cert with `graph-setup\Set-TlsCertificate.ps1` (step 3).
+   - Finish the department map in the app (Config > Department mapping), then flip provisioning on.
 5. `Start-Service PSConsole`; verify port 443 and log in.

@@ -12,7 +12,7 @@ param([int]$Days = 30)
 function Get-GraphToken {
     $cfgPath = if ($env:PSCONSOLE_DATA) { Join-Path $env:PSCONSOLE_DATA 'graph.config.json' }
                else { Join-Path $PSScriptRoot '..\..\data\graph.config.json' }
-    if (-not (Test-Path $cfgPath)) { throw "Graph config not found at $cfgPath. Run graph-setup\Set-GraphCredentials.ps1 on the server first." }
+    if (-not (Test-Path $cfgPath)) { throw "Graph config not found at $cfgPath. Run graph-setup\Set-GraphCredential.ps1 on the server first." }
     $cfg = Get-Content $cfgPath -Raw | ConvertFrom-Json
     Add-Type -AssemblyName System.Security
     $secret = [Text.Encoding]::UTF8.GetString([Security.Cryptography.ProtectedData]::Unprotect([Convert]::FromBase64String($cfg.secret),$null,'LocalMachine'))
