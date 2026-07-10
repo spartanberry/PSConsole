@@ -1,5 +1,6 @@
 <#
 .SYNOPSIS  App registration client secrets / certs expiring within N days (default 30). Catch integrations before they break.
+.CATEGORY  Entra ID
 .NOTES     Graph app perms: Application.Read.All. Read-only.
 .ROLE      HelpDesk
 #>

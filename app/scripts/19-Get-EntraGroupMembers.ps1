@@ -1,5 +1,6 @@
 <#
 .SYNOPSIS  Members of an Entra (Azure AD) group with their name and job title - defaults to "Case Managers".
+.CATEGORY  Entra ID
 .NOTES     Graph app perms: GroupMember.Read.All (or Directory.Read.All), User.Read.All. Read-only.
 .ROLE      HelpDesk
 #>

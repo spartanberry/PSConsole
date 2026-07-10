@@ -2,6 +2,89 @@
 
 All notable changes to PSConsole. Versions follow the `VERSION` file.
 
+## [1.8.0] - 2026-07-10
+
+### Added
+- **Veeam report export & email.** The Veeam page now has **Export CSV** (downloads the current view — the
+  all-jobs summary, or a selected job's runs) and **Email** (sends that view to an address, via the existing
+  results-email path; requires SMTP). Both work client-side off the already-rendered data, so there's no
+  second query.
+- **Schedulable Veeam status report.** New catalog script `30-Get-VeeamJobStatus.ps1` (admin-only, **Veeam**
+  category, `-Days` window) — one row per job with last result plus success/warning/failure counts. Pick it on
+  the **Reports** tab to email Veeam status on a daily/weekly schedule. Hidden until the Veeam add-on is
+  configured: the Run/Reports catalog now has a **Veeam** group with a `Test-VeeamConfigured` gate (mirrors Intune).
+- **`graph-setup\Set-VeeamTrust.ps1`** — one-time helper that makes the Veeam query account trust the backup
+  server's self-signed Identity-service certificate (see Fixed, below).
+
+### Changed
+- **Veeam add-on no longer needs CredSSP.** The query connects to the Veeam server's own (localhost) services,
+  so plain Kerberos is sufficient; `-UseCredSsp` on `Set-VeeamConfig.ps1` is kept only for rare onward-hop
+  scenarios and its help no longer claims it fixes the Identity-service error.
+
+### Fixed
+- **Veeam "Failed to connect to Identity service" (service account).** Not an auth or network failure — it's
+  Veeam 12.1's per-user certificate-trust prompt, which cannot be answered non-interactively. The add-on now
+  works for a non-interactive service account once trust is established with `Set-VeeamTrust.ps1` (run once;
+  re-run only if the Veeam certificate is regenerated). Documented in ADMIN-GUIDE §8b + troubleshooting.
+- **Admin pages could intermittently time out (HTTP 408) on slow queries.** Pode's default 30s request timeout
+  raced the Veeam "all jobs" query (~30s for the 30/60/90-day windows). Added `app\web\server.psd1` raising the
+  request timeout to 120s so slow admin queries complete; normal pages (login, dashboard, run) are unaffected.
+
+## [1.7.0] - 2026-07-10
+
+### Added
+- **Intune reporting** (**optional add-on**) — 8 read-only Microsoft Graph reports under a new **Intune**
+  category on the Run-scripts page: managed-device inventory, non-compliant devices, stale devices,
+  compliance summary, encryption status, connector status board (Exchange / NDES / Managed Google Play /
+  MTD / partners), Apple token expirations (APNs push cert + VPP + ADE/DEP), and Windows Autopilot.
+  Available to helpdesk and admin. Reuses the existing Entra Graph app registration — needs these
+  application permissions added + admin consent: `DeviceManagementManagedDevices.Read.All`,
+  `DeviceManagementConfiguration.Read.All`, `DeviceManagementServiceConfig.Read.All`. Gated by
+  `data\intune.config.json` (`graph-setup\Set-IntuneConfig.ps1`); ships dormant until enabled. Verified
+  against a live Intune tenant.
+- **Run-scripts page grouped by category.** Scripts are now organised into **Active Directory**,
+  **Entra ID**, and **Intune** groups (via a `.CATEGORY` header tag, with a numeric-prefix fallback), so
+  the catalog stays navigable as it grows. Applies to the scheduled-reports script picker too.
+- **Veeam per-job view.** The Veeam page now has a **job selector** — pick a job to see its individual
+  runs (end time, result, duration) over the window, or keep "All jobs" for the existing per-job
+  last-result + aggregate success/warning/failure view. Window options are now **7 / 30 / 60 / 90 days**.
+
+### Changed
+- **`.ROLE` is now enforced**, not just documentation. The Run page shows helpdesk only `HelpDesk`-tagged
+  scripts (admins see everything), and the `/run` route rejects out-of-role or disabled-add-on scripts
+  server-side (403), not just by hiding them. The Intune scripts are tagged `HelpDesk`, so helpdesk and
+  admin both get the Intune group (still gated by the add-on); Veeam remains admin-only.
+
+### Fixed
+- **User creation now reports a bad operator credential clearly.** An invalid operator AD username/password
+  no longer surfaces the cryptic "You cannot call a method on a null-valued expression"; `New-OnPremUser`
+  detects the failed bind and returns an actionable message (enter your own AD credentials, confirm the OU).
+
+## [1.6.0] - 2026-07-09
+
+### Added
+- **Scheduled reports** (standard, admin-only) — new **Reports** tab. Define a report that runs a
+  catalog script on a schedule (daily/weekly/monthly at a chosen time, optional `Name=Value` params)
+  and emails the result as an HTML table to a recipient list. Includes enable/disable, **Run now**, and
+  delete. A dispatcher (`Invoke-DueReports`, `app/lib/Reports.ps1`) fires every 15 min and sends any
+  report whose scheduled time has passed for its current occurrence (tracked via `lastRun`). Requires
+  SMTP configured (`Set-SmtpConfig.ps1`); the page warns if it isn't.
+- **Veeam backup reports** (admin-only, **optional add-on**) — new **Veeam** tab, shown only when
+  `data\veeam.config.json` is present and enabled. Two read-only views: **last backup result per job**
+  and **success/warning/failure counts** over a selectable window (7/30/90 days). Queries Veeam Backup
+  & Replication over PowerShell remoting into the Veeam server (`app/lib/Veeam.ps1`), so this host needs
+  no Veeam console; bounded WinRM timeout, graceful failure. Configure with
+  `graph-setup\Set-VeeamConfig.ps1` (optional DPAPI-stored credential; otherwise the service account).
+- New RBAC actions `manage-reports` and `veeam-reports` (admin-only by default-deny). Nav icons for both.
+
+### Notes
+- The Veeam layer is verified against a live B&R 12 server. Last-run uses `Get-VBRJob` +
+  `FindLastSession()`; history uses the per-job session store — both fast (~30s page load). The
+  unfiltered `Get-VBRBackupSession` is deliberately avoided (minutes on busy servers).
+- The query runs as the PSConsole service account unless `-Username` is set; a separate backup server
+  will usually deny that account WinRM ("Access is denied"). Configure a dedicated reader credential and
+  grant it remote WinRM + the Veeam Backup Viewer role. See ADMIN-GUIDE §8b.
+
 ## [1.5.1] - 2026-07-09
 
 ### Changed

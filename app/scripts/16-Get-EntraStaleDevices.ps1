@@ -1,5 +1,6 @@
 <#
 .SYNOPSIS  Entra-joined/registered devices with no activity in N days (default 90) - cleanup candidates.
+.CATEGORY  Entra ID
 .NOTES     Graph app perms: Device.Read.All or Directory.Read.All. Read-only.
 .ROLE      HelpDesk
 #>

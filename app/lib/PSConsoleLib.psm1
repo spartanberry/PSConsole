@@ -10,3 +10,6 @@
 . $PSScriptRoot\Onboarding.ps1
 . $PSScriptRoot\Decommission.ps1
 . $PSScriptRoot\Notify.ps1
+. $PSScriptRoot\Reports.ps1
+. $PSScriptRoot\Veeam.ps1
+. $PSScriptRoot\Catalog.ps1

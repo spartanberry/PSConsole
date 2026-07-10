@@ -103,7 +103,13 @@ function New-OnPremUser {
     $server = if ($cfg.ldapServer) { $cfg.ldapServer } else { $env:USERDNSDOMAIN }
     try {
         $ou = New-Object System.DirectoryServices.DirectoryEntry("LDAP://$server/$($Plan.ou)", $OperatorUser, $OperatorPassword)
-        [void]$ou.NativeObject   # forces a bind now, so bad creds / bad OU fail clearly here
+        [void]$ou.NativeObject   # forces a bind now
+        # A bad operator credential (or wrong OU) does NOT reliably throw here - the bind can come back
+        # with a null Children collection, which would otherwise fail two lines down as the cryptic
+        # "You cannot call a method on a null-valued expression." Catch it now with a clear message.
+        if ($null -eq $ou.Children) {
+            throw "Could not bind to the target OU as operator '$OperatorUser'. Enter YOUR OWN AD username and password (the account authorized to create users) - not the new user's name - and confirm the OU '$($Plan.ou)' exists."
+        }
         $user = $ou.Children.Add("CN=$($Plan.displayName)", 'user')
         $user.Properties['sAMAccountName'].Value    = $Plan.samAccountName
         $user.Properties['userPrincipalName'].Value = $Plan.userPrincipalName

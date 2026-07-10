@@ -1,0 +1,35 @@
+$($data.head)
+$($data.open)
+
+$(if(-not $data.configured){'<div class="alert warn"><b>Veeam add-on not configured.</b> Run <code>graph-setup\Set-VeeamConfig.ps1 -Server backupserver.example.org</code> on the server, and make sure the account can WinRM into the Veeam server and read VBR (a Veeam "Backup Viewer" / "Restore Operator" role).</div>'})
+$(if($data.err){'<div class="alert err"><b>Could not reach Veeam:</b> '+(ConvertTo-PSCEncoded $data.err)+'</div>'})
+
+$($data.controlsHtml)
+
+$($data.bodyHtml)
+
+<span id="veeamTitle" style="display:none">$(ConvertTo-PSCEncoded $data.reportTitle)</span>
+<script>
+(function(){
+ var ROWS = $($data.rowsJson);
+ var TITLE = ((document.getElementById('veeamTitle')||{}).textContent||'Veeam backups');
+ window.veeamCsv=function(){
+  if(!ROWS.length){alert('No rows to export.');return;}
+  var cols=Object.keys(ROWS[0]);
+  var csv=[cols.join(',')].concat(ROWS.map(function(r){return cols.map(function(k){return '"'+String(r[k]==null?'':r[k]).replace(/"/g,'""')+'"';}).join(',');})).join('\n');
+  var a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download=(TITLE.replace(/[^\w.\-]+/g,'_')||'veeam')+'.csv';a.click();
+ };
+ window.veeamEmail=function(){
+  var to=((document.getElementById('veeamMailTo')||{}).value||'').trim();var st=document.getElementById('veeamMailStatus');
+  if(!to){st.style.color='var(--err)';st.textContent='Enter an email address.';return;}
+  if(!ROWS.length){st.style.color='var(--err)';st.textContent='No rows to email.';return;}
+  var fd=new FormData();fd.append('to',to);fd.append('script',TITLE);fd.append('rows',JSON.stringify(ROWS));
+  st.style.color='var(--muted)';st.textContent='Sending...';
+  fetch('/email-results',{method:'POST',body:fd}).then(function(r){return r.json();}).then(function(j){
+   st.style.color=j.ok?'var(--ok-fg)':'var(--err)';st.textContent=j.ok?('Sent to '+to):('Failed: '+(j.error||'error'));
+  }).catch(function(){st.style.color='var(--err)';st.textContent='Failed to send.';});
+ };
+})();
+</script>
+
+$($data.close)

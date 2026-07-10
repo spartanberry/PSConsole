@@ -1,5 +1,6 @@
 <#
 .SYNOPSIS  List all disabled user accounts in Active Directory.
+.CATEGORY  Active Directory
 .NOTES     Pure ADSI. No RSAT/ActiveDirectory module required. Read-only.
 .ROLE      HelpDesk
 #>

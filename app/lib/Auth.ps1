@@ -112,7 +112,8 @@ function Invoke-Authenticate([string]$Username, [string]$Password) {
 }
 
 function Test-Authorized([string]$Role, [string]$Action) {
-    # actions: run, view-history, upload, configure, create-user, decommission-user, onboarding-run
+    # actions: run, view-history, upload, configure, create-user, decommission-user, onboarding-run,
+    #          manage-reports, veeam-reports (the last two are admin-only via the default-deny below)
     switch ($Role) {
         'admin'    { return $true }
         # Helpdesk: run scripts, create + onboard + decommission users, and the overview dashboard.

@@ -16,6 +16,8 @@ $script:PSCIcons = @{
     brand        = "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='4 7 9 12 4 17'/><line x1='12' y1='17' x2='20' y2='17'/></svg>"
     dashboard    = "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect x='3' y='3' width='7' height='7'/><rect x='14' y='3' width='7' height='7'/><rect x='14' y='14' width='7' height='7'/><rect x='3' y='14' width='7' height='7'/></svg>"
     theme        = "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'><circle cx='12' cy='12' r='9'/><path d='M12 3v18a9 9 0 0 0 0-18z' fill='currentColor' stroke='none'/></svg>"
+    reports      = "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><line x1='6' y1='20' x2='6' y2='14'/><line x1='12' y1='20' x2='12' y2='4'/><line x1='18' y1='20' x2='18' y2='10'/></svg>"
+    veeam        = "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z'/><polyline points='9 12 11 14 15 10'/></svg>"
 }
 
 function Get-AppStyles {
@@ -107,6 +109,8 @@ function Get-AppChrome {
         @{ href='/users/new';           key='create';       label='Create User';   icon=$script:PSCIcons.create;       show=$true }
         @{ href='/users/onboarding';    key='onboarding';   label='Onboarding';    icon=$script:PSCIcons.onboarding;   show=$true }
         @{ href='/users/decommission';  key='decommission'; label='Decommission';  icon=$script:PSCIcons.decommission; show=$true }
+        @{ href='/admin/reports';       key='reports';      label='Reports';       icon=$script:PSCIcons.reports;      show=($role -eq 'admin') }
+        @{ href='/admin/veeam';         key='veeam';        label='Veeam';         icon=$script:PSCIcons.veeam;        show=(($role -eq 'admin') -and (Test-VeeamConfigured)) }
         @{ href='/admin/config';        key='config';       label='Config';        icon=$script:PSCIcons.config;       show=($role -eq 'admin') }
         @{ href='/?view=audit';         key='audit';        label='Audit';         icon=$script:PSCIcons.audit;        show=($role -eq 'admin') }
     )

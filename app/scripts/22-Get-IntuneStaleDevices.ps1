@@ -1,11 +1,11 @@
 <#
-.SYNOPSIS  360-degree lookup for a single Entra user: status, type, licenses, MFA, last sign-in, manager.
-.CATEGORY  Entra ID
-.NOTES     Graph app perms: User.Read.All, Directory.Read.All, AuditLog.Read.All. Read-only.
+.SYNOPSIS  Intune managed devices that haven't checked in for N days (default 30) - retirement/cleanup candidates.
+.CATEGORY  Intune
+.NOTES     Graph app perms: DeviceManagementManagedDevices.Read.All. Read-only. (Intune last-sync, not Entra sign-in.)
 .ROLE      HelpDesk
 #>
 [CmdletBinding()]
-param([Parameter(Mandatory=$true)][string]$UserPrincipalName)
+param([int]$Days = 30)
 #region Graph bootstrap (app-only client-credentials; reads data\graph.config.json)
 # zpsconsole has NO cloud rights; auth is via an Entra app registration, not this account.
 # The client secret is read from a DPAPI-encrypted config file, never from a parameter.
@@ -35,25 +35,19 @@ function Invoke-Graph { param([string]$Uri,[switch]$Beta)
 }
 #endregion
 
-# signInActivity can't be $select'd when addressing a user by UPN (Graph requires the object id/GUID),
-# so query the collection with a filter instead - that form supports signInActivity in one call.
-$u = (Invoke-Graph ("/users?`$filter=userPrincipalName eq '$UserPrincipalName'&`$select=displayName,userPrincipalName,accountEnabled,userType,jobTitle,department,createdDateTime,signInActivity,assignedLicenses,onPremisesSyncEnabled,id"))[0]
-if (-not $u) { throw "No user found with UPN '$UserPrincipalName'." }
-$skus = @{}; Invoke-Graph '/subscribedSkus' | ForEach-Object { $skus[$_.skuId] = $_.skuPartNumber }
-$lic = (@($u.assignedLicenses) | ForEach-Object { $skus[$_.skuId] }) -join ', '
-$mfa = $null; try { $mfa = (Invoke-Graph "/reports/authenticationMethods/userRegistrationDetails/$($u.id)")[0] } catch {}
-$mgr = $null; try { $mgr = (Invoke-Graph "/users/$UserPrincipalName/manager")[0].userPrincipalName } catch {}
-[PSCustomObject]@{
-    UserPrincipalName = $u.userPrincipalName
-    DisplayName       = $u.displayName
-    Enabled           = $u.accountEnabled
-    Type              = $u.userType
-    Department        = $u.department
-    Title             = $u.jobTitle
-    Created           = $u.createdDateTime
-    LastSignIn        = $u.signInActivity.lastSignInDateTime
-    Licenses          = $lic
-    MFARegistered     = $mfa.isMfaRegistered
-    Manager           = $mgr
-    OnPremSynced      = $u.onPremisesSyncEnabled
-}
+$cutoff = (Get-Date).AddDays(-$Days)
+$sel = 'deviceName,userPrincipalName,operatingSystem,osVersion,lastSyncDateTime,enrolledDateTime,managedDeviceOwnerType'
+Invoke-Graph "/deviceManagement/managedDevices?`$select=$sel" |
+Where-Object { $_.lastSyncDateTime -and ([datetime]$_.lastSyncDateTime) -lt $cutoff } |
+ForEach-Object {
+    [PSCustomObject]@{
+        Device      = $_.deviceName
+        User        = $_.userPrincipalName
+        OS          = $_.operatingSystem
+        OSVersion   = $_.osVersion
+        Ownership   = $_.managedDeviceOwnerType
+        LastCheckIn = $_.lastSyncDateTime
+        DaysStale   = [math]::Round(((Get-Date) - [datetime]$_.lastSyncDateTime).TotalDays,0)
+        Enrolled    = $_.enrolledDateTime
+    }
+} | Sort-Object DaysStale -Descending
