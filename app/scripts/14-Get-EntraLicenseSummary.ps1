@@ -1,5 +1,6 @@
 <#
 .SYNOPSIS  License (SKU) consumption across the tenant: enabled, consumed, available.
+.CATEGORY  Entra ID
 .NOTES     Graph app perms: Organization.Read.All or Directory.Read.All. Read-only.
 .ROLE      HelpDesk
 #>

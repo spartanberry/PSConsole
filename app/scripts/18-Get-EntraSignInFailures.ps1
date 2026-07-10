@@ -1,5 +1,6 @@
 <#
 .SYNOPSIS  Recent failed interactive sign-ins (default last 24h). Optional -UserPrincipalName to scope to one user.
+.CATEGORY  Entra ID
 .NOTES     Graph app perms: AuditLog.Read.All. Needs Entra ID P1+. Read-only.
 .ROLE      HelpDesk
 #>

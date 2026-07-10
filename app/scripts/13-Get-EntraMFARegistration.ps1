@@ -1,5 +1,6 @@
 <#
 .SYNOPSIS  Per-user MFA registration status. Use -UnregisteredOnly to surface accounts lacking MFA.
+.CATEGORY  Entra ID
 .NOTES     Graph app perms: AuditLog.Read.All (Reports). Needs Entra ID P1+. Read-only.
 .ROLE      HelpDesk
 #>

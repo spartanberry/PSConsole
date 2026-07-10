@@ -248,6 +248,97 @@ Set them up with the helpers in `graph-setup\` (run **on PSCONSOLE01**):
 
 ---
 
+## 8b. Reports & Veeam (admin)
+
+**Scheduled reports** (standard) - the **Reports** tab. Define a report that runs a catalog script on
+a schedule (daily/weekly/monthly at a set time, optional `Name=Value` params) and emails the result as
+an HTML table to a recipient list. Enable/disable, **Run now**, and delete are on the page. A dispatcher
+fires every 15 min and sends any report whose time has passed for its current occurrence. Requires SMTP
+(`Set-SmtpConfig.ps1`); the page warns if email isn't configured.
+
+**Veeam backup reports** (optional add-on) - the **Veeam** tab, shown only when `data\veeam.config.json`
+is present and enabled. Two read-only views: last backup result per job, and success/warning/failure
+counts over 7/30/90 days. Configure with:
+
+```powershell
+cd graph-setup
+.\Set-VeeamConfig.ps1 -Server backupserver.example.org -Username DOMAIN\svc-veeamread   # or omit -Username to use the service account
+```
+
+How it works: PSConsole opens a WinRM session to the Veeam server (Windows PowerShell 5.1) and shells
+out to **pwsh 7** there to load the PS7-targeted `Veeam.Backup.PowerShell` module - so this host needs no
+Veeam console, and the Veeam server needs no PS7 remoting endpoint. It reads the last run per job
+(`Get-VBRJob` + `FindLastSession()`) and per-job success/warning/failure counts over the window
+(the per-job session store) - both fast; the whole page loads in ~30s. The account used must (1) be able
+to WinRM into the Veeam server and (2) have Veeam read rights (a "Backup Viewer" / "Restore Operator"
+role). Read-only - no backup is ever started or changed.
+
+By default (no `-Username`) the query runs as the **PSConsole service account**, which usually is *not*
+allowed to WinRM into a separate backup server - so the page shows "Access is denied". The clean fix is a
+dedicated least-privilege reader account: `Set-VeeamConfig.ps1 -Server ... -Username DOMAIN\svc-veeamread`
+(the password is stored DPAPI-encrypted, machine-bound). Grant that account remote WinRM + the Veeam
+Backup Viewer role on the backup server.
+
+**First-time certificate trust (Veeam 12.1+) - required one-time step.** The modern Veeam PowerShell
+client pins the backup server's self-signed certificate *per Windows user*: the very first connection
+must interactively **accept** it. A query account driven non-interactively never sees that prompt, so the
+page fails with **"Failed to connect to Identity service"** even when WinRM, the credential, and the Veeam
+role are all correct. Establish the trust once for the configured account:
+
+```powershell
+cd graph-setup
+.\Set-VeeamTrust.ps1        # accepts the certificate on the query account's behalf (read-only)
+```
+
+Re-run it only if the Veeam server's certificate is regenerated (e.g. after a Veeam upgrade). This is a
+Veeam-side trust, unrelated to any host hardening/GPO - no security policy needs to change.
+
+**Export & email.** The Veeam page has **Export CSV** (downloads the current view - all-jobs summary or the
+selected job's runs) and **Email** (sends that view to one address; needs SMTP via `Set-SmtpConfig.ps1`). For
+recurring delivery, schedule the **`30-Get-VeeamJobStatus.ps1`** report on the **Reports** tab (e.g. Daily
+07:00, `Days=7`) - one row per job with last result + success/warning/failure counts, emailed automatically.
+
+---
+
+## 8c. Intune reports (admin add-on)
+
+**Intune reports** (optional add-on) add an **Intune** category to the Run-scripts page (admin-only):
+managed-device inventory, non-compliant / stale devices, compliance summary, encryption status, a
+connector status board (Exchange / NDES / Managed Google Play / MTD / partners), Apple token expirations
+(APNs push cert + VPP + ADE/DEP), and Windows Autopilot. All are read-only Microsoft Graph queries.
+
+They reuse the **same Graph app registration** as the Entra reports (`data\graph.config.json`) - no new
+credential. Two steps to turn it on:
+
+1. In Entra, add these **application** permissions to that app and **grant admin consent** (no
+   secret/clientId change is needed - client-credentials tokens use `scope=.default`, so newly consented
+   permissions apply automatically):
+   - `DeviceManagementManagedDevices.Read.All`
+   - `DeviceManagementConfiguration.Read.All`
+   - `DeviceManagementServiceConfig.Read.All`
+2. On the server, enable the add-on and restart:
+   ```powershell
+   cd graph-setup
+   .\Set-IntuneConfig.ps1        # writes data\intune.config.json (enabled). -Disabled to keep it dormant.
+   Restart-Service PSConsole
+   ```
+
+Until enabled, the Intune category is hidden and its scripts refuse to run (so the public build ships it
+dormant). The connector/expiration reports handle "not configured" endpoints cleanly (e.g. no on-prem
+Exchange connector, or no Apple VPP) - they show *not applicable* / *not configured* rather than an error.
+
+The expiration and connector reports (e.g. `26-Get-IntuneAppleExpirations`, `25-Get-IntuneConnectorStatus`)
+can be scheduled and emailed like any catalog script - see 8b - handy for catching an APNs certificate
+before it lapses.
+
+### Run-scripts categories & roles
+The Run page groups scripts into **Active Directory**, **Entra ID**, and **Intune** via each script's
+`.CATEGORY` header tag (falling back to the numeric prefix: 0x = AD, 1x = Entra, 2x = Intune). The
+`.ROLE` header is enforced: helpdesk sees and can run only `HelpDesk`-tagged scripts; admins run
+everything. A script that omits these tags defaults to category *Other* and role *HelpDesk*.
+
+---
+
 ## 9. Troubleshooting
 
 - **Login 500:** check `data\ldap-debug.log`. Directory-auth failures are now caught and logged
@@ -258,6 +349,22 @@ Set them up with the helpers in `graph-setup\` (run **on PSCONSOLE01**):
   sync). Confirm the create OU is in the sync scope.
 - **Onboarding `manual-needed`:** mail-enabled groups and EXO isn't configured - set up
   PSConsole-EXO-Write, or add those members by hand.
+- **Veeam "Could not reach Veeam: ... Access is denied":** the query account (the service account when
+  no `-Username` is set) can't WinRM into the Veeam server. Configure a dedicated reader with
+  `Set-VeeamConfig.ps1 -Username DOMAIN\svc-veeamread` and grant it remote WinRM + the Veeam Backup Viewer
+  role there. Other "Could not reach Veeam" causes: `pwsh 7` isn't installed on the Veeam server, or the
+  account lacks Veeam read rights. The page always shows the exact underlying error.
+- **Veeam "Failed to connect to Identity service":** despite the wording this is **not** an auth or
+  network failure - it's the per-user certificate-trust prompt (Veeam 12.1+) that can't be answered
+  non-interactively. Run `graph-setup\Set-VeeamTrust.ps1` once to accept the Veeam server's certificate on
+  the query account's behalf, then reload the page. (Verify from the Veeam server that the account is not
+  simply missing the Backup Viewer role or remote WinRM first.)
+- **Scheduled report didn't send:** SMTP not configured, no recipients, or the report is disabled. Use
+  **Run now** to test; the result banner reports the row count and any email error.
+- **Intune category missing / Intune script won't run:** the add-on isn't enabled - run
+  `graph-setup\Set-IntuneConfig.ps1` and restart. If it's enabled but scripts error with an auth/permission
+  message, the three `DeviceManagement*.Read.All` application permissions aren't consented on the Graph app
+  yet (see 8c). Intune scripts are admin-only, so they never appear for helpdesk.
 - **Site frozen:** see section 2.
 
 ---

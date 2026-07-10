@@ -4,7 +4,7 @@ $($data.open)
 <div class="card" style="max-width:880px">
   <h3>Run a script</h3>
   <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
-    <div><label>Script</label><select id="script">$(foreach($s in $data.scripts){"<option>$s</option>"})</select></div>
+    <div><label>Script</label><select id="script">$($data.scriptsHtml)</select></div>
     <div style="flex:1;min-width:260px"><label>Parameters <span class="note">- Key=Value;Key2=Value2</span></label><input id="params" placeholder="e.g. Days=30;GroupName=Sales" style="width:100%"></div>
     <div><button onclick="run()">Run</button></div>
   </div>

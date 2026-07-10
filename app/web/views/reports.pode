@@ -1,0 +1,60 @@
+$($data.head)
+$($data.open)
+
+$(if($data.msg){ if($data.msg -eq 'Saved'){'<div class="alert ok">Saved.</div>'}else{'<div class="alert err">'+(ConvertTo-PSCEncoded $data.msg)+'</div>'} })
+$(if(-not $data.smtpOk){'<div class="alert warn"><b>Email is not configured.</b> You can define reports, but they will not send until SMTP is set up with <code>graph-setup\Set-SmtpConfig.ps1</code>.</div>'})
+
+<div class="card">
+  <h3>Scheduled reports</h3>
+  <div style="overflow-x:auto"><table>
+    <tr><th>Report</th><th>When</th><th>Recipients</th><th>On</th><th>Last run</th><th></th></tr>
+    $($data.rowsHtml)
+    $(if(-not $data.rowsHtml){'<tr><td colspan="6" class="note">No scheduled reports yet. Add one below.</td></tr>'})
+  </table></div>
+</div>
+
+<div class="card">
+  <h3>Add a report</h3>
+  <form method="post" action="/admin/reports/save">
+    <div class="grid2">
+      <div><label>Name</label><input name="name" placeholder="e.g. Daily disabled accounts" required></div>
+      <div><label>Script</label><select name="script">$($data.scriptOptions)</select></div>
+    </div>
+    <label>Recipients (comma-separated)</label>
+    <input name="recipients" placeholder="it@example.com, backups@example.com">
+    <div class="grid2">
+      <div><label>Frequency</label><select name="frequency" id="freq" onchange="freqChg()"><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option></select></div>
+      <div><label>Time</label><div style="display:flex;gap:6px">
+        <select name="hour">$((0..23 | ForEach-Object { "<option value='$_'$(if($_ -eq 7){' selected'})>$('{0:00}' -f $_)</option>" }) -join '')</select>
+        <select name="minute">$((0,15,30,45 | ForEach-Object { "<option value='$_'>$('{0:00}' -f $_)</option>" }) -join '')</select>
+      </div></div>
+      <div id="dowWrap" style="display:none"><label>Day of week</label><select name="dayOfWeek">$((0..6 | ForEach-Object { $n=@('Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday')[$_]; "<option value='$_'$(if($_ -eq 1){' selected'})>$n</option>" }) -join '')</select></div>
+      <div id="domWrap" style="display:none"><label>Day of month</label><select name="dayOfMonth">$((1..28 | ForEach-Object { "<option value='$_'>$_</option>" }) -join '')</select></div>
+    </div>
+    <label>Parameters (optional, one per line: <code>Name=Value</code>)</label>
+    <textarea name="params" rows="3" placeholder="Days=30"></textarea>
+    <label style="display:inline-flex;align-items:center;gap:8px;margin-top:10px"><input type="checkbox" name="enabled" value="true" checked style="width:auto"> Enabled</label>
+    <div><button type="submit">Save report</button></div>
+  </form>
+</div>
+
+<script>
+function freqChg(){var f=document.getElementById('freq').value;document.getElementById('dowWrap').style.display=(f==='weekly')?'':'none';document.getElementById('domWrap').style.display=(f==='monthly')?'':'none';}
+async function repRun(id){
+  if(!confirm('Run this report now and email it to its recipients?'))return;
+  try{
+    var r=await fetch('/admin/reports/run',{method:'POST',body:new URLSearchParams({id:id})});
+    var j=await r.json();
+    if(j.ok){alert('Ran OK: '+j.rows+' row(s). '+(j.mailed?'Emailed.':'NOT emailed ('+(j.mailError||j.mailNote||'no recipients / smtp off')+').'));}
+    else{alert('Script error: '+(j.error||'failed'));}
+  }catch(e){alert('Request failed: '+e);}
+  location.reload();
+}
+async function repDel(id){
+  if(!confirm('Delete this scheduled report?'))return;
+  await fetch('/admin/reports/delete',{method:'POST',body:new URLSearchParams({id:id})});
+  location.reload();
+}
+</script>
+
+$($data.close)

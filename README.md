@@ -25,6 +25,7 @@ on Windows PowerShell 5.1.
    `Set-ExoConfig.ps1` (Exchange Online), `Set-SmtpConfig.ps1` (notifications).
 6. **Finish provisioning setup** in the app under **Config > Department mapping**, then turn provisioning on.
 
+
 ## Requirements
 
 - Windows Server with **Windows PowerShell 5.1**

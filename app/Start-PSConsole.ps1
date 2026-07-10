@@ -104,9 +104,11 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
     Add-PodeRoute -Method Get -Path '/' -ScriptBlock {
         if (-not (Require 'helpdesk' 'run' $WebEvent)) { return }
         $u = $WebEvent.Session.Data.user
-        $scripts = Get-ChildItem $using:ScriptDir -Filter *.ps1 | Select-Object -Expand Name
+        # Scripts grouped by category (Active Directory / Entra ID / Intune), filtered to this role and
+        # to the Intune add-on gate. Built as <optgroup> HTML in the route (same pattern as other pages).
+        $scriptsHtml = Get-ScriptOptionsHtml -Dir $using:ScriptDir -Role $u.role
         $chrome = Get-AppChrome -Active 'run' -User $u -Title 'Run scripts' -Subtitle 'Execute a curated PowerShell script' -HasLogo ([bool]((Get-Store config).logoFile))
-        Write-PodeViewResponse -Path 'dashboard' -Data @{ user=$u; scripts=$scripts; head=$chrome.head; open=$chrome.open; close=$chrome.close }
+        Write-PodeViewResponse -Path 'dashboard' -Data @{ user=$u; scriptsHtml=$scriptsHtml; head=$chrome.head; open=$chrome.open; close=$chrome.close }
     }
 
     # Overview dashboard - available to admin AND helpdesk. Admins see recent audit activity; helpdesk
@@ -315,6 +317,11 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
         $name = Split-Path -Leaf $WebEvent.Data.script          # leaf only - blocks path traversal
         $path = Join-Path $using:ScriptDir $name
         if (-not (Test-Path $path)) { Set-PodeResponseStatus -Code 404; return }
+        # Enforce the script's own gates server-side (not just hidden in the UI): admin-only scripts stay
+        # admin-only, and Intune scripts refuse to run unless the add-on is enabled.
+        $meta = Get-ScriptMeta $path
+        if ($u.role -ne 'admin' -and $meta.Role -ne 'HelpDesk') { Set-PodeResponseStatus -Code 403; return }
+        if ($meta.Category -eq 'Intune' -and -not (Test-IntuneConfigured)) { Set-PodeResponseStatus -Code 403; return }
         $params = @{}
         foreach ($k in $WebEvent.Data.Keys) { if ($k -like 'p_*') { $params[$k.Substring(2)] = $WebEvent.Data[$k] } }
         $sw = [Diagnostics.Stopwatch]::StartNew()
@@ -465,6 +472,167 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
         $sw.Stop()
         Write-Audit $u.username $u.role 'onboarding-run' 'cloud' @{ processed=$sum.processed; completed=$sum.completed; partial=$sum.partial; waiting=$sum.waiting } 'success' $sw.ElapsedMilliseconds ''
         Write-PodeJsonResponse -Value $sum
+    }
+
+    # ---- Scheduled reports (admin): run a catalog script on a schedule and email the result ----
+    Add-PodeRoute -Method Get -Path '/admin/reports' -ScriptBlock {
+        if (-not (Require 'admin' 'manage-reports' $WebEvent)) { return }
+        $u = $WebEvent.Session.Data.user
+        # Same grouped, add-on-gated catalog as the Run page (admin, so all categories incl. Intune when enabled).
+        $scriptOptions = Get-ScriptOptionsHtml -Dir $using:ScriptDir -Role $u.role
+        $rowsHtml = (@(Get-ReportSchedules) | ForEach-Object {
+            $s = $_
+            $when = Get-ReportScheduleText $s
+            $rec  = (@($s.recipients) -join ', ')
+            $en   = if ($s.enabled) { '<span class="pill s-complete">on</span>' } else { '<span class="pill s-pending-sync">off</span>' }
+            $lastTxt = '<span class="note">never</span>'
+            if ($s.lastRun) {
+                $lt = try { ([datetime]$s.lastRun).ToString('MM/dd/yyyy h:mm tt') } catch { [string]$s.lastRun }
+                $lastTxt = "$(ConvertTo-PSCEncoded $lt)<br><span class='note'>$(ConvertTo-PSCEncoded ([string]$s.lastStatus))</span>"
+            }
+            "<tr><td>$(ConvertTo-PSCEncoded ([string]$s.name))<br><span class='note'>$(ConvertTo-PSCEncoded ([string]$s.script))</span></td><td>$(ConvertTo-PSCEncoded $when)</td><td>$(ConvertTo-PSCEncoded $rec)</td><td>$en</td><td>$lastTxt</td><td style='white-space:nowrap'><button class='secondary' onclick=`"repRun('$($s.id)')`">Run now</button> <button class='danger' onclick=`"repDel('$($s.id)')`">Delete</button></td></tr>"
+        }) -join ''
+        $chrome = Get-AppChrome -Active 'reports' -User $u -Title 'Scheduled reports' -Subtitle 'Run a script on a schedule and email it' -HasLogo ([bool]((Get-Store config).logoFile))
+        Write-PodeViewResponse -Path 'reports' -Data @{ user=$u; rowsHtml=$rowsHtml; scriptOptions=$scriptOptions; smtpOk=[bool](Test-SmtpConfigured); msg=$WebEvent.Query['e']; head=$chrome.head; open=$chrome.open; close=$chrome.close }
+    }
+    Add-PodeRoute -Method Post -Path '/admin/reports/save' -ScriptBlock {
+        if (-not (Require 'admin' 'manage-reports' $WebEvent)) { return }
+        $u = $WebEvent.Session.Data.user; $b = $WebEvent.Data
+        $name = ([string]$b.name).Trim()
+        $script = Split-Path -Leaf ([string]$b.script)
+        if (-not $name -or -not $script) { Move-PodeResponseUrl -Url '/admin/reports?e=Name+and+script+are+required'; return }
+        $recips = @(([string]$b.recipients) -split '[,;]' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        if (-not $recips.Count) { Move-PodeResponseUrl -Url '/admin/reports?e=At+least+one+recipient+is+required'; return }
+        # optional params: "Name=Value" per line
+        $params = @{}
+        foreach ($line in (([string]$b.params) -split "`n")) { if ($line -match '^\s*([^=\s]+)\s*=\s*(.+?)\s*$') { $params[$Matches[1]] = $Matches[2] } }
+        $rec = [pscustomobject]@{
+            id          = if ($b.id) { [string]$b.id } else { [guid]::NewGuid().ToString('N') }
+            name        = $name
+            script      = $script
+            params      = ([pscustomobject]$params)
+            recipients  = $recips
+            frequency   = ([string]$b.frequency)
+            hour        = [int]$b.hour
+            minute      = if ($b.minute) { [int]$b.minute } else { 0 }
+            dayOfWeek   = if ($b.dayOfWeek) { [int]$b.dayOfWeek } else { 1 }
+            dayOfMonth  = if ($b.dayOfMonth) { [int]$b.dayOfMonth } else { 1 }
+            enabled     = ("$($b.enabled)" -match '^(true|on|1)$')
+            lastRun     = ''
+            lastStatus  = ''
+        }
+        $scheds = @(Get-ReportSchedules)
+        $existing = @($scheds | Where-Object { $_.id -eq $rec.id })
+        if ($existing.Count) {
+            # preserve last-run info when editing
+            $rec.lastRun = [string]$existing[0].lastRun; $rec.lastStatus = [string]$existing[0].lastStatus
+            $scheds = @($scheds | Where-Object { $_.id -ne $rec.id })
+        }
+        $scheds = @($scheds) + $rec
+        Set-ReportSchedules $scheds
+        Write-Audit $u.username $u.role 'configure' 'report-schedule' @{ name=$name; script=$script } 'success' 0 ''
+        Move-PodeResponseUrl -Url '/admin/reports?e=Saved'
+    }
+    Add-PodeRoute -Method Post -Path '/admin/reports/delete' -ScriptBlock {
+        if (-not (Require 'admin' 'manage-reports' $WebEvent)) { return }
+        $id = [string]$WebEvent.Data.id
+        Set-ReportSchedules @(@(Get-ReportSchedules) | Where-Object { $_.id -ne $id })
+        Write-PodeJsonResponse -Value @{ ok=$true }
+    }
+    Add-PodeRoute -Method Post -Path '/admin/reports/run' -ScriptBlock {
+        if (-not (Require 'admin' 'manage-reports' $WebEvent)) { return }
+        $u = $WebEvent.Session.Data.user; $id = [string]$WebEvent.Data.id
+        $scheds = @(Get-ReportSchedules)
+        $s = @($scheds | Where-Object { $_.id -eq $id })
+        if (-not $s.Count) { Write-PodeJsonResponse -Value @{ ok=$false; error='Schedule not found.' }; return }
+        $res = Send-ScheduledReport -Schedule $s[0]
+        Set-ReportRunResult -Schedule $s[0] -Result $res
+        Set-ReportSchedules $scheds
+        Write-Audit $u.username $u.role 'report-run' ([string]$s[0].script) @{ name=[string]$s[0].name; rows=$res.rows; mailed=[bool]$res.mailed } ($(if($res.ok){'success'}else{'error'})) 0 ($res.error)
+        Write-PodeJsonResponse -Value @{ ok=$res.ok; rows=$res.rows; mailed=$res.mailed; error=$res.error; mailError=$res.mailError; mailNote=$res.mailNote }
+    }
+
+    # ---- Veeam backup reports (admin; OPTIONAL add-on, gated by data\veeam.config.json) ----
+    Add-PodeRoute -Method Get -Path '/admin/veeam' -ScriptBlock {
+        if (-not (Require 'admin' 'veeam-reports' $WebEvent)) { return }
+        $u = $WebEvent.Session.Data.user
+        $days = [int]($WebEvent.Query['days']); if ($days -notin 7,30,60,90) { $days = 30 }
+        $job  = [string]$WebEvent.Query['job']
+        $err = ''; $configured = [bool](Test-VeeamConfigured)
+        $pill = { param($res) switch ("$res") { 'Success' { '<span class="pill s-complete">Success</span>' } 'Warning' { '<span class="pill s-manual-needed">Warning</span>' } 'Failed' { '<span class="pill s-partial">Failed</span>' } default { "<span class='pill s-pending-sync'>$(ConvertTo-PSCEncoded ([string]$res))</span>" } } }
+        $jobNames = @(); $bodyHtml = ''; $controlsHtml = ''
+        $reportRows = @(); $reportTitle = 'Veeam backups'   # flat rows for CSV/email of the current view
+        if (-not $configured) {
+            $bodyHtml = "<div class='card'><p class='note' style='margin:0'>Veeam is not configured. Run <code>graph-setup\Set-VeeamConfig.ps1</code> on the server.</p></div>"
+        }
+        else {
+            $sr = Get-VeeamSessions -Days $days
+            if (-not $sr.ok) {
+                $err = [string]$sr.error
+                $bodyHtml = "<div class='card'><p class='note' style='margin:0'>Unavailable - see the message above.</p></div>"
+            }
+            else {
+                $jobNames = @(@(Get-VeeamLastJobStatus $sr) | Select-Object -Expand Job)
+                if ($job -and ($jobNames -contains $job)) {
+                    # ---- one job: its individual runs inside the window ----
+                    $runs = @(Get-VeeamJobSessions $sr -Job $job)
+                    $jh   = @(Get-VeeamJobHistory $sr) | Where-Object { $_.Job -eq $job } | Select-Object -First 1
+                    $sum  = if ($jh) { "$($jh.Success) success &middot; $($jh.Warning) warning &middot; $($jh.Failed) failed &middot; $($jh.Total) runs" } else { 'no runs in this window' }
+                    $runRows = if ($runs.Count) { (@($runs) | ForEach-Object {
+                        $en = try { ([datetime]$_.End).ToString('MM/dd/yyyy h:mm tt') } catch { [string]$_.End }
+                        "<tr><td>$(ConvertTo-PSCEncoded $en)</td><td>$(& $pill $_.Result)</td><td>$(ConvertTo-PSCEncoded ([string]$_.Duration))</td></tr>"
+                    }) -join '' } else { "<tr><td colspan='3' class='note'>No runs for this job in the last $days days.</td></tr>" }
+                    $bodyHtml = "<div class='card'><h3 style='margin:0 0 4px'>$(ConvertTo-PSCEncoded $job) &mdash; last $days days</h3><p class='note' style='margin:0 0 10px'>$sum</p><div style='overflow-x:auto'><table><tr><th>Run (ended)</th><th>Result</th><th>Duration</th></tr>$runRows</table></div></div>"
+                    $reportRows = @(Get-VeeamJobReportRows $sr -Job $job); $reportTitle = "$job (last $days days)"
+                }
+                else {
+                    $job = ''   # normalize to "All jobs"
+                    $last = @(Get-VeeamLastJobStatus $sr); $hist = @(Get-VeeamJobHistory $sr)
+                    $lastHtml = if ($last.Count) { (@($last) | ForEach-Object {
+                        $lr = try { ([datetime]$_.LastRun).ToString('MM/dd/yyyy h:mm tt') } catch { [string]$_.LastRun }
+                        "<tr><td>$(ConvertTo-PSCEncoded ([string]$_.Job))</td><td>$(& $pill $_.Result)</td><td>$(ConvertTo-PSCEncoded $lr)</td></tr>"
+                    }) -join '' } else { "<tr><td colspan='3' class='note'>No jobs found.</td></tr>" }
+                    $histHtml = if ($hist.Count) { (@($hist) | ForEach-Object {
+                        "<tr><td>$(ConvertTo-PSCEncoded ([string]$_.Job))</td><td class='ok'>$($_.Success)</td><td class='man'>$($_.Warning)</td><td class='fail'>$($_.Failed)</td><td>$($_.Total)</td></tr>"
+                    }) -join '' } else { "<tr><td colspan='5' class='note'>No backup sessions found in the last $days days.</td></tr>" }
+                    $bodyHtml = "<div class='card'><h3 style='margin:0 0 4px'>Last backup result per job</h3><p class='note' style='margin:0 0 10px'>The most recent run of each job (regardless of window).</p><div style='overflow-x:auto'><table><tr><th>Job</th><th>Last result</th><th>Last run</th></tr>$lastHtml</table></div></div>" +
+                                "<div class='card'><h3>Success / warning / failure &mdash; last $days days</h3><div style='overflow-x:auto'><table><tr><th>Job</th><th>Success</th><th>Warning</th><th>Failed</th><th>Total</th></tr>$histHtml</table></div><p class='note' style='margin-top:10px'>Read-only view of Veeam sessions over PowerShell remoting. No backups are started or changed.</p></div>"
+                    $reportRows = @(Get-VeeamReportRows $sr); $reportTitle = "Veeam backups (last $days days)"
+                }
+            }
+        }
+        if ($configured) {
+            $jobEnc  = [uri]::EscapeDataString([string]$job)
+            $jobOpts = "<option value=''>All jobs</option>" + ((@($jobNames) | ForEach-Object {
+                $selAttr = if ($_ -eq $job) { ' selected' } else { '' }
+                "<option$selAttr>$(ConvertTo-PSCEncoded ([string]$_))</option>"
+            }) -join '')
+            $winHtml = (@(7,30,60,90) | ForEach-Object {
+                if ($_ -eq $days) { "<b>$($_)d</b>" } else { "<a href='/admin/veeam?days=$($_)&job=$jobEnc'>$($_)d</a>" }
+            }) -join ' &middot; '
+            $controlsHtml = "<div class='card'>" +
+                "<div style='display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap'>" +
+                    "<div><label>Job</label><br><select onchange=`"location.href='/admin/veeam?days=$days&job='+encodeURIComponent(this.value)`">$jobOpts</select></div>" +
+                    "<div style='margin-left:auto' class='note'>Window: $winHtml</div>" +
+                "</div>" +
+                "<div style='display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px'>" +
+                    "<button class='secondary' onclick='veeamCsv()'>Export CSV</button>" +
+                    "<span style='margin-left:auto;display:flex;gap:8px;align-items:center'>" +
+                        "<input id='veeamMailTo' placeholder='email address' style='width:210px'>" +
+                        "<button class='secondary' onclick='veeamEmail()'>Email</button> <span id='veeamMailStatus' style='font-size:12px'></span>" +
+                    "</span>" +
+                "</div></div>"
+        }
+        # Flat rows of the current view (all-jobs summary OR one job's runs) for client-side CSV/email.
+        $rowsJson = if (@($reportRows).Count) { '[' + ((@($reportRows) | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 4 }) -join ',') + ']' } else { '[]' }
+        $chrome = Get-AppChrome -Active 'veeam' -User $u -Title 'Veeam backups' -Subtitle 'Per-job status and success/failure history' -HasLogo ([bool]((Get-Store config).logoFile))
+        Write-PodeViewResponse -Path 'veeam' -Data @{ user=$u; configured=$configured; days=$days; job=$job; err=$err; controlsHtml=$controlsHtml; bodyHtml=$bodyHtml; rowsJson=$rowsJson; reportTitle=$reportTitle; head=$chrome.head; open=$chrome.open; close=$chrome.close }
+    }
+
+    # Scheduled-report dispatcher: fires every 15 min, sends any report whose time has passed for its
+    # current occurrence (see Reports.ps1 Test-ReportDue). No-op when there are no due schedules.
+    Add-PodeSchedule -Name 'scheduled-reports' -Cron '*/15 * * * *' -ScriptBlock {
+        try { Invoke-DueReports } catch {}
     }
 
     # Optional auto-processor: runs every 5 min but only acts when onboardingAutoRun is true in
