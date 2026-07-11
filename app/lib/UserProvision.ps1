@@ -98,7 +98,7 @@ function Test-ProvisionPlan([pscustomobject]$Plan) {
 # Phase 1: create the on-prem AD user via ADSI, binding as the operator. UNTESTED until go-live;
 # only reachable when provisioning is enabled.
 function New-OnPremUser {
-    param([pscustomobject]$Plan,[string]$Password,[string]$OperatorUser,[string]$OperatorPassword)
+    param([pscustomobject]$Plan,[string]$Password,[string]$OperatorUser,[string]$OperatorPassword,[bool]$MustChangePassword = $true)
     $cfg = Get-Store config
     $server = if ($cfg.ldapServer) { $cfg.ldapServer } else { $env:USERDNSDOMAIN }
     try {
@@ -122,7 +122,8 @@ function New-OnPremUser {
         $user.CommitChanges()
         $user.Invoke('SetPassword', $Password) | Out-Null
         $user.Properties['userAccountControl'].Value = 0x200   # NORMAL_ACCOUNT, enabled
-        $user.Properties['pwdLastSet'].Value = 0               # must change at next logon
+        # pwdLastSet = 0 forces a change at next logon; -1 stamps it "now" so no change is required.
+        $user.Properties['pwdLastSet'].Value = if ($MustChangePassword) { 0 } else { -1 }
         if ($Plan.manager) {
             $mdn = Resolve-UserDN $server $Plan.manager $OperatorUser $OperatorPassword
             if ($mdn) { $user.Properties['manager'].Value = $mdn }

@@ -1,0 +1,40 @@
+$($data.head)
+$($data.open)
+
+$(if(-not $data.configured){'<div class="alert warn"><b>SharePoint remediation add-on not configured.</b> Run <code>graph-setup\Set-SharePointConfig.ps1</code> on the server and complete the one-time site setup (see ADMIN-GUIDE).</div>'})
+$(if($data.err){'<div class="alert err"><b>SharePoint error:</b> '+(ConvertTo-PSCEncoded $data.err)+'</div>'})
+
+<div class="card">
+  <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+    <button class="secondary" onclick="location.href='/admin/veeam'">&lsaquo; Back to Veeam</button>
+    <span class="note">Open backup failures needing attention. Flip a failed day to <b>Remediated</b> and record the fix; the daily sync never overwrites these notes. Full history lives in the SharePoint list.</span>
+    <span style="margin-left:auto"><button class="secondary" onclick="remSync()">Sync now</button> <span id="remSyncStatus" class="note"></span></span>
+  </div>
+  <div style="overflow-x:auto"><table>
+    <tr><th>Job</th><th>Date</th><th>Veeam result</th><th>Status</th><th>Fix note</th><th></th></tr>
+    $($data.bodyRows)
+  </table></div>
+</div>
+
+<script>
+function remSave(btn){
+ var tr=btn.closest('tr');var id=tr.getAttribute('data-id');
+ var status=tr.querySelector('.remStatus').value;var note=tr.querySelector('.remNote').value;
+ btn.disabled=true;btn.textContent='Saving...';
+ var fd=new FormData();fd.append('itemId',id);fd.append('status',status);fd.append('note',note);
+ fetch('/admin/veeam/remediation/save',{method:'POST',body:fd}).then(function(r){return r.json();}).then(function(j){
+  btn.disabled=false;btn.textContent=j.ok?'Saved':'Retry';
+  if(j.ok){var m=tr.querySelector('.remMeta');if(m){m.textContent='by '+(j.by||'')+' '+(j.at||'');}}
+  else{alert('Save failed: '+(j.error||'error'));}
+ }).catch(function(){btn.disabled=false;btn.textContent='Retry';alert('Save failed.');});
+}
+function remSync(){
+ var st=document.getElementById('remSyncStatus');st.textContent='Syncing (may take ~30s)...';
+ fetch('/admin/veeam/remediation/sync',{method:'POST'}).then(function(r){return r.json();}).then(function(j){
+  if(j.ok){st.textContent='Synced: '+j.created+' created, '+j.updated+' updated.';setTimeout(function(){location.reload();},900);}
+  else{st.textContent='Sync failed: '+(j.error||'error');}
+ }).catch(function(){st.textContent='Sync failed.';});
+}
+</script>
+
+$($data.close)

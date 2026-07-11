@@ -29,10 +29,12 @@ function Get-GraphWriteToken {
 # $Body may be a hashtable (JSON-encoded here) or a pre-built JSON string (used where PS 5.1's
 # single-element-array collapse would otherwise corrupt the payload, e.g. assignLicense).
 function Invoke-GraphWrite {
-    param([ValidateSet('GET','POST','PATCH','PUT','DELETE')][string]$Method,[string]$Uri,$Body)
+    param([ValidateSet('GET','POST','PATCH','PUT','DELETE')][string]$Method,[string]$Uri,$Body,[hashtable]$Headers)
     $tok = Get-GraphWriteToken
     if ($Uri -notmatch '^https?://') { $Uri = 'https://graph.microsoft.com/v1.0' + $Uri }
-    $p = @{ Method=$Method; Uri=$Uri; Headers=@{ Authorization = "Bearer $tok" } }
+    $hdr = @{ Authorization = "Bearer $tok" }
+    if ($Headers) { foreach ($k in $Headers.Keys) { $hdr[$k] = $Headers[$k] } }
+    $p = @{ Method=$Method; Uri=$Uri; Headers=$hdr }
     if ($null -ne $Body) {
         $p.ContentType = 'application/json'
         $p.Body = if ($Body -is [string]) { $Body } else { $Body | ConvertTo-Json -Depth 6 }

@@ -12,4 +12,5 @@
 . $PSScriptRoot\Notify.ps1
 . $PSScriptRoot\Reports.ps1
 . $PSScriptRoot\Veeam.ps1
+. $PSScriptRoot\SharePoint.ps1
 . $PSScriptRoot\Catalog.ps1
