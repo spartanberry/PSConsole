@@ -7,7 +7,7 @@ automated Active Directory / Entra **user-provisioning** workflow.
 - **Host:** `PSCONSOLE01`, Windows service **PSConsole** (WinSW), HTTPS on port **443**
 - **Service account:** `example\zpsconsole` (read-only to AD by design)
 - **App root:** `E:\apps\PSConsole`
-- **Repo:** `spartanberry/PSScripts` under `psconsole/` (data/secrets are gitignored)
+- **Repo:** `example/PSScripts` under `psconsole/` (data/secrets are gitignored)
 
 ---
 

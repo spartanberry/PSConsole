@@ -32,6 +32,9 @@ function Test-PasswordHash([string]$Password, [string]$Stored) {
 
 # Validates a user's OWN credential by binding LDAPS as them. We never store end-user passwords.
 function Test-LdapCredential([string]$Username, [string]$Password) {
+    # Defence-in-depth: never attempt a bind with an empty password (AD treats an empty-password simple bind
+    # as an unauthenticated bind and returns success). Invoke-Authenticate also guards this.
+    if ([string]::IsNullOrWhiteSpace($Password)) { return $false }
     try {
         $cfg    = Get-Store config
         $server = $cfg.ldapServer; $port = [int]$cfg.ldapPort; $ssl = [bool]$cfg.ldapUseSsl
@@ -77,7 +80,7 @@ function Resolve-LdapRole([string]$Username) {
         $domainDN = $rootDse.defaultNamingContext.Value
         $sam = ($Username -split '\\')[-1] -replace '@.*$',''
         $ds = New-Object System.DirectoryServices.DirectorySearcher([ADSI]"LDAP://$server/$domainDN")
-        $ds.Filter = "(&(objectCategory=person)(sAMAccountName=$sam))"
+        $ds.Filter = "(&(objectCategory=person)(sAMAccountName=$(ConvertTo-LdapFilterValue $sam)))"
         [void]$ds.PropertiesToLoad.Add('memberOf')
         $u = $ds.FindOne()
         if (-not $u) { Write-LdapDebug "Resolve-LdapRole: no user found for sam '$sam'"; return $null }
@@ -94,6 +97,10 @@ function Resolve-LdapRole([string]$Username) {
 
 # Single entry point. Tries local app users first, then LDAP if enabled.
 function Invoke-Authenticate([string]$Username, [string]$Password) {
+    # Reject blank username/password up front. CRITICAL: an empty password on an LDAP *simple* bind is
+    # treated by Active Directory as an anonymous/unauthenticated bind that returns SUCCESS - which would be
+    # an auth bypass (valid username + empty password -> role resolved -> admin session). Never bind without one.
+    if ([string]::IsNullOrWhiteSpace($Username) -or [string]::IsNullOrWhiteSpace($Password)) { return @{ ok=$false } }
     $users = @(Get-Store users)
     $local = $users | Where-Object { $_.username -eq $Username -and $_.type -eq 'local' }
     if ($local) {
@@ -116,9 +123,9 @@ function Test-Authorized([string]$Role, [string]$Action) {
     #          manage-reports, veeam-reports (the last two are admin-only via the default-deny below)
     switch ($Role) {
         'admin'    { return $true }
-        # Helpdesk: run scripts, create + onboard + decommission users, and the overview dashboard.
-        # Deliberately NO 'view-history' (Audit) and NO 'configure' (Config) - admin-only.
-        'helpdesk' { return ($Action -in @('run','create-user','decommission-user')) }
+        # Helpdesk: run scripts, create + onboard + decommission users, manage their OWN scheduled reports,
+        # and the overview dashboard. Deliberately NO 'view-history' (Audit) and NO 'configure' (Config).
+        'helpdesk' { return ($Action -in @('run','create-user','decommission-user','manage-reports')) }
         default    { return $false }
     }
 }

@@ -55,11 +55,21 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
     } else {
         Add-PodeEndpoint -Address $Address -Port $Port -Protocol Http   # install always sets a cert; this is a fallback
     }
-    Enable-PodeSessionMiddleware -Duration 3600 -Extend
+    # HttpOnly keeps the session cookie out of JavaScript's reach (defence-in-depth vs XSS); Secure keeps
+    # it HTTPS-only (the endpoint is HTTPS). Pode signs the cookie with a per-start random secret already.
+    Enable-PodeSessionMiddleware -Duration 3600 -Extend -HttpOnly -Secure
     Set-PodeViewEngine -Type Pode
 
+    # Baseline security response headers (applied to every response). No CSP: the UI relies on inline
+    # scripts/handlers, so a meaningful CSP would need a refactor - tracked separately.
+    Set-PodeSecurityFrameOptions -Type Deny                                   # anti-clickjacking
+    Set-PodeSecurityContentTypeOptions                                        # X-Content-Type-Options: nosniff
+    Set-PodeSecurityStrictTransportSecurity -Duration 31536000 -IncludeSubDomains
+
     function Get-User { $WebEvent.Session.Data.user }
-    function Require($role, $action, $WebEvent) {
+    # Authorization is decided solely by the ACTION via Test-Authorized (admin allows all; each role's
+    # allowed actions are the single source of truth). No role argument - that was dead/misleading.
+    function Require($action, $WebEvent) {
         $u = $WebEvent.Session.Data.user
         if (-not $u) { Move-PodeResponseUrl -Url '/login'; return $false }
         if (-not (Test-Authorized $u.role $action)) { Set-PodeResponseStatus -Code 403; Write-PodeTextResponse -Value 'Forbidden'; return $false }
@@ -67,7 +77,7 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
     }
 
     Add-PodeRoute -Method Get -Path '/login' -ScriptBlock {
-        Write-PodeViewResponse -Path 'login' -Data @{ error = $WebEvent.Query['e']; hasLogo = [bool]((Get-Store config).logoFile); head = (Get-LoginHead) }
+        Write-PodeViewResponse -Path 'login' -Data @{ error = (ConvertTo-PSCEncoded ([string]$WebEvent.Query['e'])); hasLogo = [bool]((Get-Store config).logoFile); head = (Get-LoginHead) }
     }
 
     # Unauthenticated: the logo is shown on the login page, so it can't require a session.
@@ -102,7 +112,7 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
     Add-PodeRoute -Method Post -Path '/logout' -ScriptBlock { Remove-PodeSession; Move-PodeResponseUrl -Url '/login' }
 
     Add-PodeRoute -Method Get -Path '/' -ScriptBlock {
-        if (-not (Require 'helpdesk' 'run' $WebEvent)) { return }
+        if (-not (Require 'run' $WebEvent)) { return }
         $u = $WebEvent.Session.Data.user
         # Scripts grouped by category (Active Directory / Entra ID / Intune), filtered to this role and
         # to the Intune add-on gate. Built as <optgroup> HTML in the route (same pattern as other pages).
@@ -114,7 +124,7 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
     # Overview dashboard - available to admin AND helpdesk. Admins see recent audit activity; helpdesk
     # see "passwords expiring (7d)" + "recent failed Entra sign-ins" instead (no audit access).
     Add-PodeRoute -Method Get -Path '/dashboard' -ScriptBlock {
-        if (-not (Require 'helpdesk' 'run' $WebEvent)) { return }
+        if (-not (Require 'run' $WebEvent)) { return }
         $u = $WebEvent.Session.Data.user
         $scriptDir = $using:ScriptDir
         $q = @(Get-Store onboarding)
@@ -197,7 +207,7 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
 
     # ---- User provisioning (admin-only for now; Phase 1 = on-prem AD create) ----
     Add-PodeRoute -Method Get -Path '/users/new' -ScriptBlock {
-        if (-not (Require 'admin' 'create-user' $WebEvent)) { return }
+        if (-not (Require 'create-user' $WebEvent)) { return }
         $s = Get-ProvisionSettings
         $deptObjs = @($s.departments | ForEach-Object {
             $jts = @()
@@ -217,24 +227,25 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
             hasSupervisors    = [bool]$sups.Count
             supervisorOptions = $supOptions
             enabled           = [bool]$s.enabled
+            intuneOn          = [bool](Test-IntuneConfigured)
             head = $chrome.head; open = $chrome.open; close = $chrome.close
         }
     }
     Add-PodeRoute -Method Post -Path '/users/new/preview' -ScriptBlock {
-        if (-not (Require 'admin' 'create-user' $WebEvent)) { return }
+        if (-not (Require 'create-user' $WebEvent)) { return }
         $b = $WebEvent.Data
         $jt = if ($b.jobTitles) { @([string]$b.jobTitles -split '\|' | Where-Object { $_ }) } else { @() }
         $sup = ("$($b.isSupervisor)" -match '^(true|on|1)$')
-        $plan = Get-ProvisionPlan -FirstName $b.firstName -LastName $b.lastName -Username $b.username -Department $b.department -Manager $b.manager -JobTitles $jt -Mobile $b.mobile -IsSupervisor:$sup
+        $plan = Get-ProvisionPlan -FirstName $b.firstName -LastName $b.lastName -Username $b.username -Department $b.department -Manager $b.manager -JobTitles $jt -Mobile $b.mobile -IsSupervisor:$sup -IntuneDevice $b.intuneDevice
         $errs = @(Test-ProvisionPlan $plan)
         Write-PodeJsonResponse -Value @{ ok=($errs.Count -eq 0); errors=$errs; plan=$plan }
     }
     Add-PodeRoute -Method Post -Path '/users/new/create' -ScriptBlock {
-        if (-not (Require 'admin' 'create-user' $WebEvent)) { return }
+        if (-not (Require 'create-user' $WebEvent)) { return }
         $u = $WebEvent.Session.Data.user; $b = $WebEvent.Data
         $jt = if ($b.jobTitles) { @([string]$b.jobTitles -split '\|' | Where-Object { $_ }) } else { @() }
         $sup = ("$($b.isSupervisor)" -match '^(true|on|1)$')
-        $plan = Get-ProvisionPlan -FirstName $b.firstName -LastName $b.lastName -Username $b.username -Department $b.department -Manager $b.manager -JobTitles $jt -Mobile $b.mobile -IsSupervisor:$sup
+        $plan = Get-ProvisionPlan -FirstName $b.firstName -LastName $b.lastName -Username $b.username -Department $b.department -Manager $b.manager -JobTitles $jt -Mobile $b.mobile -IsSupervisor:$sup -IntuneDevice $b.intuneDevice
         $errs = @(Test-ProvisionPlan $plan)
         if ($errs.Count) { Write-PodeJsonResponse -Value @{ ok=$false; errors=$errs }; return }
         $s = Get-ProvisionSettings
@@ -256,7 +267,7 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
         $detail = if ($res.ok) { $res.dn } else { $res.error }
         Write-Audit $u.username $u.role 'create-user' $plan.userPrincipalName @{ ou=$plan.ou; dept=$plan.department; by=$b.opUser; mustChangePwd=$mustChange } $status $sw.ElapsedMilliseconds $detail
         if ($res.ok) {
-            Add-OnboardingPending -Plan $plan -Operator $u.username -Dn $res.dn
+            Add-OnboardingPending -Plan $plan -Operator $u.username -OperatorRole $u.role -Dn $res.dn
             try { Send-UserCreatedNotification -Plan $plan -Operator $u.username -Dn $res.dn | Out-Null } catch {}
         }
         Write-PodeJsonResponse -Value @{ ok=$res.ok; error=$res.error; dn=$res.dn; plan=$plan; cloudPending=[bool]$res.ok }
@@ -264,18 +275,18 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
 
     # ---- Decommission user (helpdesk + admin): disable + move to Disabled Accounts OU ----
     Add-PodeRoute -Method Get -Path '/users/decommission' -ScriptBlock {
-        if (-not (Require 'helpdesk' 'decommission-user' $WebEvent)) { return }
+        if (-not (Require 'decommission-user' $WebEvent)) { return }
         $s = Get-ProvisionSettings
         $chrome = Get-AppChrome -Active 'decommission' -User $WebEvent.Session.Data.user -Title 'Decommission User' -Subtitle 'Disable + move to Disabled Accounts OU' -HasLogo ([bool]((Get-Store config).logoFile))
         Write-PodeViewResponse -Path 'user-decommission' -Data @{
             user       = $WebEvent.Session.Data.user
             enabled    = [bool]$s.enabled
-            disabledOu = [string]$s.disabledOu
+            disabledOu = (ConvertTo-PSCEncoded ([string]$s.disabledOu))
             head = $chrome.head; open = $chrome.open; close = $chrome.close
         }
     }
     Add-PodeRoute -Method Post -Path '/users/decommission/preview' -ScriptBlock {
-        if (-not (Require 'helpdesk' 'decommission-user' $WebEvent)) { return }
+        if (-not (Require 'decommission-user' $WebEvent)) { return }
         $plan = Find-AdUserForDecomm -Identity ([string]$WebEvent.Data.username)
         $errs = @(Test-DecommPlan $plan)
         Write-PodeJsonResponse -Value @{
@@ -289,7 +300,7 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
         }
     }
     Add-PodeRoute -Method Post -Path '/users/decommission/run' -ScriptBlock {
-        if (-not (Require 'helpdesk' 'decommission-user' $WebEvent)) { return }
+        if (-not (Require 'decommission-user' $WebEvent)) { return }
         $u = $WebEvent.Session.Data.user; $b = $WebEvent.Data
         $plan = Find-AdUserForDecomm -Identity ([string]$b.username)
         $errs = @(Test-DecommPlan $plan)
@@ -314,7 +325,7 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
     }
 
     Add-PodeRoute -Method Post -Path '/run' -ScriptBlock {
-        if (-not (Require 'helpdesk' 'run' $WebEvent)) { return }
+        if (-not (Require 'run' $WebEvent)) { return }
         $u = $WebEvent.Session.Data.user
         $name = Split-Path -Leaf $WebEvent.Data.script          # leaf only - blocks path traversal
         $path = Join-Path $using:ScriptDir $name
@@ -335,7 +346,7 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
 
     # Email the results of a run (the rows already shown to the user) to a typed address.
     Add-PodeRoute -Method Post -Path '/email-results' -ScriptBlock {
-        if (-not (Require 'helpdesk' 'run' $WebEvent)) { return }
+        if (-not (Require 'run' $WebEvent)) { return }
         $u = $WebEvent.Session.Data.user; $b = $WebEvent.Data
         $to = ([string]$b.to).Trim()
         if ($to -notmatch '^[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+$') { Write-PodeJsonResponse -Value @{ ok=$false; error='Enter a single valid email address.' }; return }
@@ -355,7 +366,7 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
 
     # ---- Admin only ----
     Add-PodeRoute -Method Post -Path '/upload' -ScriptBlock {
-        if (-not (Require 'admin' 'upload' $WebEvent)) { return }
+        if (-not (Require 'upload' $WebEvent)) { return }
         $u = $WebEvent.Session.Data.user
         # Pode stores the uploaded file's NAME in $WebEvent.Data[<field>] and the file itself
         # in $WebEvent.Files keyed by that name. Save-PodeRequestFile -Key takes the FIELD name.
@@ -366,13 +377,13 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
         Move-PodeResponseUrl -Url '/'
     }
     Add-PodeRoute -Method Get -Path '/admin/config' -ScriptBlock {
-        if (-not (Require 'admin' 'configure' $WebEvent)) { return }
+        if (-not (Require 'configure' $WebEvent)) { return }
         $cfg = Get-Store config
         $chrome = Get-AppChrome -Active 'config' -User $WebEvent.Session.Data.user -Title 'Config' -Subtitle 'Directory auth, branding, provisioning' -HasLogo ([bool]$cfg.logoFile)
         Write-PodeViewResponse -Path 'config' -Data @{ cfg=$cfg; user=$WebEvent.Session.Data.user; head=$chrome.head; open=$chrome.open; close=$chrome.close }
     }
     Add-PodeRoute -Method Post -Path '/admin/config' -ScriptBlock {
-        if (-not (Require 'admin' 'configure' $WebEvent)) { return }
+        if (-not (Require 'configure' $WebEvent)) { return }
         $u = $WebEvent.Session.Data.user; $b = $WebEvent.Data
         $cfg = Get-Store config
         $cfg.ldapEnabled = [bool]$b.ldapEnabled; $cfg.ldapServer = $b.ldapServer; $cfg.ldapPort = [int]$b.ldapPort
@@ -384,14 +395,14 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
         Move-PodeResponseUrl -Url '/admin/config'
     }
     Add-PodeRoute -Method Get -Path '/admin/audit' -ScriptBlock {
-        if (-not (Require 'admin' 'view-history' $WebEvent)) { return }
+        if (-not (Require 'view-history' $WebEvent)) { return }
         $from = [string]$WebEvent.Query['from']; $to = [string]$WebEvent.Query['to']
         $rows = if ($from -or $to) { Get-AuditRange -From $from -To $to -Max 2000 } else { Get-AuditTail 500 }
         Write-PodeJsonResponse -Value @{ rows = $rows }
     }
 
     Add-PodeRoute -Method Post -Path '/admin/logo' -ScriptBlock {
-        if (-not (Require 'admin' 'configure' $WebEvent)) { return }
+        if (-not (Require 'configure' $WebEvent)) { return }
         $u = $WebEvent.Session.Data.user
         $orig = Split-Path -Leaf ([string]$WebEvent.Data['logo'])
         $ext = [System.IO.Path]::GetExtension($orig).ToLower()
@@ -407,7 +418,7 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
         Move-PodeResponseUrl -Url '/admin/config'
     }
     Add-PodeRoute -Method Post -Path '/admin/logo/remove' -ScriptBlock {
-        if (-not (Require 'admin' 'configure' $WebEvent)) { return }
+        if (-not (Require 'configure' $WebEvent)) { return }
         $u = $WebEvent.Session.Data.user
         $cfg = Get-Store config
         if ($cfg.logoFile) { $old = Join-Path (Get-DataDir) $cfg.logoFile; if (Test-Path $old) { Remove-Item $old -Force -ErrorAction SilentlyContinue } }
@@ -419,18 +430,18 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
 
     # ---- Department mapping + provisioning settings (admin) ----
     Add-PodeRoute -Method Get -Path '/admin/deptmap' -ScriptBlock {
-        if (-not (Require 'admin' 'configure' $WebEvent)) { return }
+        if (-not (Require 'configure' $WebEvent)) { return }
         $s = Get-ProvisionSettings
         $chrome = Get-AppChrome -Active 'config' -User $WebEvent.Session.Data.user -Title 'Department mapping' -Subtitle 'Provisioning settings' -HasLogo ([bool]((Get-Store config).logoFile))
         Write-PodeViewResponse -Path 'deptmap' -Data @{
             user = $WebEvent.Session.Data.user
             json = (ConvertTo-PSCEncoded ($s | ConvertTo-Json -Depth 8))
-            msg  = $WebEvent.Query['e']
+            msg  = (ConvertTo-PSCEncoded ([string]$WebEvent.Query['e']))
             head = $chrome.head; open = $chrome.open; close = $chrome.close
         }
     }
     Add-PodeRoute -Method Post -Path '/admin/deptmap' -ScriptBlock {
-        if (-not (Require 'admin' 'configure' $WebEvent)) { return }
+        if (-not (Require 'configure' $WebEvent)) { return }
         $u = $WebEvent.Session.Data.user
         try { $parsed = $WebEvent.Data.json | ConvertFrom-Json }
         catch { Move-PodeResponseUrl -Url '/admin/deptmap?e=Invalid+JSON+-+not+saved'; return }
@@ -455,7 +466,8 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
 
     # ---- Cloud onboarding (Phase 2): apply cloud groups + license once users sync to Entra ----
     Add-PodeRoute -Method Get -Path '/users/onboarding' -ScriptBlock {
-        if (-not (Require 'admin' 'create-user' $WebEvent)) { return }
+        if (-not (Require 'create-user' $WebEvent)) { return }
+        try { Clear-CompletedOnboarding -Days 7 | Out-Null } catch {}   # keep the screen tidy on load
         $chrome = Get-AppChrome -Active 'onboarding' -User $WebEvent.Session.Data.user -Title 'Cloud onboarding' -Subtitle 'Phase 2 - applies after Entra sync' -HasLogo ([bool]((Get-Store config).logoFile))
         Write-PodeViewResponse -Path 'onboarding' -Data @{
             user       = $WebEvent.Session.Data.user
@@ -467,7 +479,7 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
         }
     }
     Add-PodeRoute -Method Post -Path '/users/onboarding/run' -ScriptBlock {
-        if (-not (Require 'admin' 'create-user' $WebEvent)) { return }
+        if (-not (Require 'create-user' $WebEvent)) { return }
         $u = $WebEvent.Session.Data.user
         $sw = [Diagnostics.Stopwatch]::StartNew()
         $sum = Invoke-Onboarding
@@ -476,13 +488,47 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
         Write-PodeJsonResponse -Value $sum
     }
 
-    # ---- Scheduled reports (admin): run a catalog script on a schedule and email the result ----
+    # Force-complete a stuck onboarding record: used when the outstanding work (e.g. a mail-enabled DL,
+    # or a license fixed in the portal) was done MANUALLY outside PSConsole. Stops retries, suppresses
+    # further email, and lets the record age out via the normal 7-day cleanup. Helpdesk + admin.
+    Add-PodeRoute -Method Post -Path '/users/onboarding/resolve' -ScriptBlock {
+        if (-not (Require 'create-user' $WebEvent)) { return }
+        $u  = $WebEvent.Session.Data.user
+        $id = [string]$WebEvent.Data.id
+        $q  = @(Get-Store onboarding)
+        $rec = $q | Where-Object { [string]$_.id -eq $id } | Select-Object -First 1
+        if (-not $rec) { Write-PodeJsonResponse -Value @{ ok=$false; error='record not found' }; return }
+        if ([string]$rec.cloudStatus -eq 'complete') { Write-PodeJsonResponse -Value @{ ok=$true; note='already complete' }; return }
+        $prev = [string]$rec.cloudStatus
+        $rec | Add-Member -NotePropertyName cloudStatus -NotePropertyValue 'complete' -Force
+        $rec | Add-Member -NotePropertyName note        -NotePropertyValue "resolved manually by $($u.username)" -Force
+        $rec | Add-Member -NotePropertyName completedAt -NotePropertyValue (Get-Date).ToString('o') -Force
+        $rec | Add-Member -NotePropertyName resolvedBy  -NotePropertyValue $u.username -Force
+        $rec | Add-Member -NotePropertyName resolvedAt  -NotePropertyValue (Get-Date).ToString('o') -Force
+        $rec | Add-Member -NotePropertyName notified    -NotePropertyValue $true -Force   # no further onboarding email
+        Set-Store onboarding $q
+        Write-Audit $u.username $u.role 'onboarding-resolve' ([string]$rec.upn) @{ from=$prev } 'success' 0 'resolved manually'
+        Write-PodeJsonResponse -Value @{ ok=$true }
+    }
+
+    # ---- Scheduled reports (admin + helpdesk): each user manages their own; admins can view/edit/create
+    #      for anyone via ?scope=all (to support helpdesk). ----
     Add-PodeRoute -Method Get -Path '/admin/reports' -ScriptBlock {
-        if (-not (Require 'admin' 'manage-reports' $WebEvent)) { return }
+        if (-not (Require 'manage-reports' $WebEvent)) { return }
         $u = $WebEvent.Session.Data.user
-        # Same grouped, add-on-gated catalog as the Run page (admin, so all categories incl. Intune when enabled).
+        $isAdmin = ($u.role -eq 'admin')
+        $viewAll = ($isAdmin -and ("$($WebEvent.Query['scope'])" -eq 'all'))
+        # Catalog is role-scoped: helpdesk sees only HelpDesk-tagged scripts; admin sees all (incl. Intune/Veeam).
         $scriptOptions = Get-ScriptOptionsHtml -Dir $using:ScriptDir -Role $u.role
-        $rowsHtml = (@(Get-ReportSchedules) | ForEach-Object {
+        $all = @(Get-ReportSchedules)
+        $visible = if ($viewAll) { $all } else { @($all | Where-Object { [string]$_.owner -eq $u.username }) }
+        # Edit prefill - only for a schedule the user may edit (own, or any when admin).
+        $editRec = $null; $editId = [string]$WebEvent.Query['edit']
+        if ($editId) {
+            $cand = @($all | Where-Object { [string]$_.id -eq $editId }) | Select-Object -First 1
+            if ($cand -and ($isAdmin -or [string]$cand.owner -eq $u.username)) { $editRec = $cand }
+        }
+        $rowsHtml = (@($visible) | ForEach-Object {
             $s = $_
             $when = Get-ReportScheduleText $s
             $rec  = (@($s.recipients) -join ', ')
@@ -492,17 +538,35 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
                 $lt = try { ([datetime]$s.lastRun).ToString('MM/dd/yyyy h:mm tt') } catch { [string]$s.lastRun }
                 $lastTxt = "$(ConvertTo-PSCEncoded $lt)<br><span class='note'>$(ConvertTo-PSCEncoded ([string]$s.lastStatus))</span>"
             }
-            "<tr><td>$(ConvertTo-PSCEncoded ([string]$s.name))<br><span class='note'>$(ConvertTo-PSCEncoded ([string]$s.script))</span></td><td>$(ConvertTo-PSCEncoded $when)</td><td>$(ConvertTo-PSCEncoded $rec)</td><td>$en</td><td>$lastTxt</td><td style='white-space:nowrap'><button class='secondary' onclick=`"repRun('$($s.id)')`">Run now</button> <button class='danger' onclick=`"repDel('$($s.id)')`">Delete</button></td></tr>"
+            $ownerCell = if ($viewAll) { "<td>$(ConvertTo-PSCEncoded ([string]$s.owner))</td>" } else { '' }
+            "<tr><td>$(ConvertTo-PSCEncoded ([string]$s.name))<br><span class='note'>$(ConvertTo-PSCEncoded ([string]$s.script))</span></td>$ownerCell<td>$(ConvertTo-PSCEncoded $when)</td><td>$(ConvertTo-PSCEncoded $rec)</td><td>$en</td><td>$lastTxt</td><td style='white-space:nowrap'><button class='secondary' onclick=`"repEdit('$($s.id)')`">Edit</button> <button class='secondary' onclick=`"repRun('$($s.id)')`">Run now</button> <button class='danger' onclick=`"repDel('$($s.id)')`">Delete</button></td></tr>"
         }) -join ''
+        # Form prefill blob (defaults for create; the selected schedule for edit).
+        $ef = [ordered]@{ id=''; name=''; script=''; recipients=''; frequency='daily'; hour=7; minute=0; dayOfWeek=1; dayOfMonth=1; enabled=$true; owner=''; params='' }
+        if ($editRec) {
+            $pl = ''
+            if ($editRec.params) { $pl = (@($editRec.params.PSObject.Properties | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join "`n") }
+            $ef = [ordered]@{ id=[string]$editRec.id; name=[string]$editRec.name; script=[string]$editRec.script; recipients=(@($editRec.recipients) -join ', '); frequency=[string]$editRec.frequency; hour=[int]$editRec.hour; minute=[int]$editRec.minute; dayOfWeek=[int]$editRec.dayOfWeek; dayOfMonth=[int]$editRec.dayOfMonth; enabled=[bool]$editRec.enabled; owner=[string]$editRec.owner; params=$pl }
+        }
+        $bs = [char]92
+        $efJson = ($ef | ConvertTo-Json -Compress -Depth 4) -replace '<', ($bs + 'u003c') -replace '>', ($bs + 'u003e') -replace '&', ($bs + 'u0026')
         $chrome = Get-AppChrome -Active 'reports' -User $u -Title 'Scheduled reports' -Subtitle 'Run a script on a schedule and email it' -HasLogo ([bool]((Get-Store config).logoFile))
-        Write-PodeViewResponse -Path 'reports' -Data @{ user=$u; rowsHtml=$rowsHtml; scriptOptions=$scriptOptions; smtpOk=[bool](Test-SmtpConfigured); msg=$WebEvent.Query['e']; head=$chrome.head; open=$chrome.open; close=$chrome.close }
+        $backUrl = if ($viewAll) { '/admin/reports?scope=all' } else { '/admin/reports' }
+        Write-PodeViewResponse -Path 'reports' -Data @{ user=$u; isAdmin=$isAdmin; viewAll=$viewAll; rowsHtml=$rowsHtml; scriptOptions=$scriptOptions; efJson=$efJson; backUrl=$backUrl; smtpOk=[bool](Test-SmtpConfigured); msg=$WebEvent.Query['e']; head=$chrome.head; open=$chrome.open; close=$chrome.close }
     }
     Add-PodeRoute -Method Post -Path '/admin/reports/save' -ScriptBlock {
-        if (-not (Require 'admin' 'manage-reports' $WebEvent)) { return }
+        if (-not (Require 'manage-reports' $WebEvent)) { return }
         $u = $WebEvent.Session.Data.user; $b = $WebEvent.Data
         $name = ([string]$b.name).Trim()
         $script = Split-Path -Leaf ([string]$b.script)
         if (-not $name -or -not $script) { Move-PodeResponseUrl -Url '/admin/reports?e=Name+and+script+are+required'; return }
+        # Server-side role gate on the chosen script (a helpdesk user can only schedule HelpDesk-tagged scripts,
+        # mirroring the /run gate) - not just what the dropdown offered them.
+        $spath = Join-Path $using:ScriptDir $script
+        if (-not (Test-Path $spath)) { Move-PodeResponseUrl -Url '/admin/reports?e=Unknown+script'; return }
+        $smeta = Get-ScriptMeta $spath
+        if ($u.role -ne 'admin' -and $smeta.Role -ne 'HelpDesk') { Move-PodeResponseUrl -Url '/admin/reports?e=You+are+not+allowed+to+schedule+that+script'; return }
+        if ($smeta.Category -eq 'Intune' -and -not (Test-IntuneConfigured)) { Move-PodeResponseUrl -Url '/admin/reports?e=Intune+add-on+is+not+enabled'; return }
         $recips = @(([string]$b.recipients) -split '[,;]' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
         if (-not $recips.Count) { Move-PodeResponseUrl -Url '/admin/reports?e=At+least+one+recipient+is+required'; return }
         # optional params: "Name=Value" per line
@@ -520,14 +584,19 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
             dayOfWeek   = if ($b.dayOfWeek) { [int]$b.dayOfWeek } else { 1 }
             dayOfMonth  = if ($b.dayOfMonth) { [int]$b.dayOfMonth } else { 1 }
             enabled     = ("$($b.enabled)" -match '^(true|on|1)$')
+            owner       = if (($u.role -eq 'admin') -and ([string]$b.owner).Trim()) { ([string]$b.owner).Trim() } else { $u.username }
+            ownerRole   = $u.role
             lastRun     = ''
             lastStatus  = ''
         }
         $scheds = @(Get-ReportSchedules)
         $existing = @($scheds | Where-Object { $_.id -eq $rec.id })
         if ($existing.Count) {
-            # preserve last-run info when editing
+            # non-admins can only edit their own; admins can edit anyone's (to support helpdesk)
+            if (($u.role -ne 'admin') -and ([string]$existing[0].owner -ne $u.username)) { Move-PodeResponseUrl -Url '/admin/reports?e=That+schedule+is+not+yours'; return }
             $rec.lastRun = [string]$existing[0].lastRun; $rec.lastStatus = [string]$existing[0].lastStatus
+            # keep the existing owner unless an admin explicitly reassigned it via the owner field
+            if (-not (($u.role -eq 'admin') -and ([string]$b.owner).Trim())) { $rec.owner = [string]$existing[0].owner }
             $scheds = @($scheds | Where-Object { $_.id -ne $rec.id })
         }
         $scheds = @($scheds) + $rec
@@ -536,17 +605,21 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
         Move-PodeResponseUrl -Url '/admin/reports?e=Saved'
     }
     Add-PodeRoute -Method Post -Path '/admin/reports/delete' -ScriptBlock {
-        if (-not (Require 'admin' 'manage-reports' $WebEvent)) { return }
-        $id = [string]$WebEvent.Data.id
-        Set-ReportSchedules @(@(Get-ReportSchedules) | Where-Object { $_.id -ne $id })
+        if (-not (Require 'manage-reports' $WebEvent)) { return }
+        $u = $WebEvent.Session.Data.user; $id = [string]$WebEvent.Data.id
+        $scheds = @(Get-ReportSchedules)
+        $target = @($scheds | Where-Object { $_.id -eq $id })
+        if ($target.Count -and ($u.role -ne 'admin') -and [string]$target[0].owner -ne $u.username) { Write-PodeJsonResponse -Value @{ ok=$false; error='Not your schedule.' }; return }
+        Set-ReportSchedules @($scheds | Where-Object { $_.id -ne $id })
         Write-PodeJsonResponse -Value @{ ok=$true }
     }
     Add-PodeRoute -Method Post -Path '/admin/reports/run' -ScriptBlock {
-        if (-not (Require 'admin' 'manage-reports' $WebEvent)) { return }
+        if (-not (Require 'manage-reports' $WebEvent)) { return }
         $u = $WebEvent.Session.Data.user; $id = [string]$WebEvent.Data.id
         $scheds = @(Get-ReportSchedules)
         $s = @($scheds | Where-Object { $_.id -eq $id })
         if (-not $s.Count) { Write-PodeJsonResponse -Value @{ ok=$false; error='Schedule not found.' }; return }
+        if (($u.role -ne 'admin') -and [string]$s[0].owner -ne $u.username) { Write-PodeJsonResponse -Value @{ ok=$false; error='Not your schedule.' }; return }
         $res = Send-ScheduledReport -Schedule $s[0]
         Set-ReportRunResult -Schedule $s[0] -Result $res
         Set-ReportSchedules $scheds
@@ -556,7 +629,7 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
 
     # ---- Veeam backup reports (admin; OPTIONAL add-on, gated by data\veeam.config.json) ----
     Add-PodeRoute -Method Get -Path '/admin/veeam' -ScriptBlock {
-        if (-not (Require 'admin' 'veeam-reports' $WebEvent)) { return }
+        if (-not (Require 'veeam-reports' $WebEvent)) { return }
         $u = $WebEvent.Session.Data.user
         $days = [int]($WebEvent.Query['days']); if ($days -notin 7,30,60,90) { $days = 30 }
         $job  = [string]$WebEvent.Query['job']
@@ -628,13 +701,17 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
         }
         # Flat rows of the current view (all-jobs summary OR one job's runs) for client-side CSV/email.
         $rowsJson = if (@($reportRows).Count) { '[' + ((@($reportRows) | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 4 }) -join ',') + ']' } else { '[]' }
+        # Escape HTML-significant chars as \uXXXX so an injected job name (e.g. containing "</script>") can't
+        # break out of the inline <script> where this JSON is embedded. Stays valid JSON / JS.
+        $bs = [char]92   # backslash, built via char code to keep the \uXXXX escapes unambiguous
+        $rowsJson = $rowsJson -replace '<', ($bs + 'u003c') -replace '>', ($bs + 'u003e') -replace '&', ($bs + 'u0026')
         $chrome = Get-AppChrome -Active 'veeam' -User $u -Title 'Veeam backups' -Subtitle 'Per-job status and success/failure history' -HasLogo ([bool]((Get-Store config).logoFile))
         Write-PodeViewResponse -Path 'veeam' -Data @{ user=$u; configured=$configured; days=$days; job=$job; err=$err; controlsHtml=$controlsHtml; bodyHtml=$bodyHtml; rowsJson=$rowsJson; reportTitle=$reportTitle; head=$chrome.head; open=$chrome.open; close=$chrome.close }
     }
 
     # ---- Veeam -> SharePoint remediation tracking (admin, optional add-on) ----
     Add-PodeRoute -Method Get -Path '/admin/veeam/remediation' -ScriptBlock {
-        if (-not (Require 'admin' 'veeam-reports' $WebEvent)) { return }
+        if (-not (Require 'veeam-reports' $WebEvent)) { return }
         $u = $WebEvent.Session.Data.user
         $configured = [bool](Test-SharePointConfigured)
         $err = ''; $rows = @()
@@ -657,7 +734,7 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
         Write-PodeViewResponse -Path 'veeam-remediation' -Data @{ user=$u; configured=$configured; err=$err; bodyRows=$bodyRows; head=$chrome.head; open=$chrome.open; close=$chrome.close }
     }
     Add-PodeRoute -Method Post -Path '/admin/veeam/remediation/save' -ScriptBlock {
-        if (-not (Require 'admin' 'veeam-reports' $WebEvent)) { return }
+        if (-not (Require 'veeam-reports' $WebEvent)) { return }
         $u = $WebEvent.Session.Data.user; $b = $WebEvent.Data
         $id = [string]$b.itemId
         if (-not $id) { Write-PodeJsonResponse -Value @{ ok=$false; error='Missing item id.' }; return }
@@ -667,7 +744,7 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
         Write-PodeJsonResponse -Value @{ ok=$res.ok; error=$res.error; by=$u.username; at=$when }
     }
     Add-PodeRoute -Method Post -Path '/admin/veeam/remediation/sync' -ScriptBlock {
-        if (-not (Require 'admin' 'veeam-reports' $WebEvent)) { return }
+        if (-not (Require 'veeam-reports' $WebEvent)) { return }
         $u = $WebEvent.Session.Data.user
         $sw = [Diagnostics.Stopwatch]::StartNew()
         $res = Sync-VeeamToSharePoint -Days 7
@@ -682,10 +759,21 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
         try { Invoke-DueReports } catch {}
     }
 
-    # Optional auto-processor: runs every 5 min but only acts when onboardingAutoRun is true in
-    # settings (default off). Idempotent, so re-runs are harmless. Manual "Run now" always works.
-    Add-PodeSchedule -Name 'cloud-onboarding' -Cron '*/5 * * * *' -ScriptBlock {
+    # Optional auto-processor: only acts when onboardingAutoRun is true in settings (default off).
+    # Idempotent, so re-runs are harmless. Manual "Run now" always works. Runs every 3 min - a touch
+    # FASTER than the ~5-min Entra Connect (ADSync) delta sync on the DC, so a freshly-synced new user
+    # is picked up within one poll no matter how the two schedules' phases drift (the gMSA sync task
+    # fires on a registration-relative clock, this fires on wall-clock boundaries).
+    Add-PodeSchedule -Name 'cloud-onboarding' -Cron '*/3 * * * *' -ScriptBlock {
+        try { Clear-CompletedOnboarding -Days 7 | Out-Null } catch {}   # prune finished users after 7 days (runs regardless of autoRun)
         try { if ((Get-ProvisionSettings).onboardingAutoRun) { Invoke-Onboarding | Out-Null } } catch {}
+    }
+
+    # Veeam job alerts: every 2 hours, email the configured recipient (smtp veeamAlertTo) about any NEW
+    # Failed/Warning backup session. Deduped in data\veeam-alerts.json so each run alerts once; failed jobs
+    # ask for remediation. No-op unless the Veeam add-on is configured.
+    Add-PodeSchedule -Name 'veeam-alert' -Cron '15 */2 * * *' -ScriptBlock {
+        try { if (Test-VeeamConfigured) { Send-VeeamJobAlerts -Days 3 | Out-Null } } catch {}
     }
 
     # Daily Veeam -> SharePoint status sync at 08:00. No-op unless the SharePoint add-on is configured;

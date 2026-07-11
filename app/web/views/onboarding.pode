@@ -8,12 +8,13 @@ $(if(-not $data.exoReady){'<div class="alert warn"><b>Exchange Online not config
   <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
     <button onclick="runNow()">Run onboarding now</button>
     <span id="runmsg" class="note"></span>
-    <span class="note" style="margin-left:auto">$(if($data.autoRun){'Auto-processing is <b>ON</b> (every 5 min).'}else{'Auto-processing is off - use Run now, or set <code>onboardingAutoRun</code> true in Config &rsaquo; Department mapping.'})</span>
+    <span class="note" style="margin-left:auto">$(if($data.autoRun){'Auto-processing is <b>ON</b> (every 3 min).'}else{'Auto-processing is off - use Run now, or set <code>onboardingAutoRun</code> true in Config &rsaquo; Department mapping.'})</span>
   </div>
+  <p class="note" style="margin:8px 0 0">An email is sent when a user finishes onboarding (or after it fails 3 times). Completed entries clear from this list automatically after 7 days.</p>
 
   <table>
-  <tr><th>User</th><th>Dept / Title</th><th>Status</th><th>Added (Graph)</th><th>Auto (dynamic)</th><th>Needs manual / failed</th><th>License</th><th>Last run</th></tr>
-  $(if(-not $data.queue -or @($data.queue).Count -eq 0){'<tr><td colspan="8" class="note">No onboarding records yet. They appear here after a user is created (once provisioning is enabled).</td></tr>'})
+  <tr><th>User</th><th>Dept / Title</th><th>Status</th><th>Added (Graph)</th><th>Auto (dynamic)</th><th>Needs manual / failed</th><th>License</th><th>Last run</th><th>Actions</th></tr>
+  $(if(-not $data.queue -or @($data.queue).Count -eq 0){'<tr><td colspan="9" class="note">No onboarding records yet. They appear here after a user is created (once provisioning is enabled).</td></tr>'})
   $(foreach($r in @($data.queue)){
     $st = "$($r.cloudStatus)"
     $addedList = @()
@@ -24,6 +25,7 @@ $(if(-not $data.exoReady){'<div class="alert warn"><b>Exchange Online not config
     $manual = if($r.groupsManual){ (@($r.groupsManual) | ForEach-Object { "$_ (mail-enabled)" }) } else { @() }
     $failed = if($r.groupsFailed){ @($r.groupsFailed) } else { @() }
     $attn   = (@($manual + $failed) -join '; ')
+    $act    = if($st -eq 'complete'){ '<span class="note">clears in 7d</span>' } else { "<button class=`"secondary`" onclick=`"resolveOnb('$($r.id)')`">Mark resolved</button>" }
     "<tr><td>$(ConvertTo-PSCEncoded $r.displayName)<br><span class=`"note`">$(ConvertTo-PSCEncoded $r.upn)</span></td>" +
     "<td>$(ConvertTo-PSCEncoded $r.department)<br><span class=`"note`">$(ConvertTo-PSCEncoded $r.title)</span></td>" +
     "<td><span class=`"pill s-$st`">$st</span><br><span class=`"note`">$(ConvertTo-PSCEncoded $r.note)</span></td>" +
@@ -31,7 +33,8 @@ $(if(-not $data.exoReady){'<div class="alert warn"><b>Exchange Online not config
     "<td class=`"auto`">$(ConvertTo-PSCEncoded $auto)</td>" +
     "<td class=`"man`">$(ConvertTo-PSCEncoded $attn)</td>" +
     "<td>$(ConvertTo-PSCEncoded "$($r.licenseStatus)")</td>" +
-    "<td class=`"note`">$(ConvertTo-PSCEncoded "$($r.lastRun)")</td></tr>"
+    "<td class=`"note`">$(ConvertTo-PSCEncoded "$($r.lastRun)")</td>" +
+    "<td>$act</td></tr>"
   })
   </table>
 </div>
@@ -44,6 +47,16 @@ async function runNow(){
     m.textContent='processed '+j.processed+' - completed '+j.completed+', partial '+j.partial+', waiting for sync '+j.waiting+(j.errors&&j.errors.length?(' - errors: '+j.errors.join('; ')):'');
     setTimeout(()=>location.reload(),1200);
   }catch(e){m.textContent='run failed: '+e;}
+}
+async function resolveOnb(id){
+  if(!confirm('Mark this onboarding record as resolved?\n\nUse this when the outstanding work was completed manually. It stops the automatic retries, sends no further email, and the entry clears after 7 days.'))return;
+  const m=document.getElementById('runmsg');m.textContent='resolving...';
+  try{
+    const f=new FormData();f.append('id',id);
+    const r=await fetch('/users/onboarding/resolve',{method:'POST',body:f});const j=await r.json();
+    m.textContent=j.ok?'marked resolved':('resolve failed: '+(j.error||'unknown'));
+    setTimeout(()=>location.reload(),1000);
+  }catch(e){m.textContent='resolve failed: '+e;}
 }
 </script>
 

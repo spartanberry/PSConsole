@@ -2,6 +2,102 @@
 
 All notable changes to PSConsole. Versions follow the `VERSION` file.
 
+## [1.12.0] - 2026-07-11
+
+### Added
+- **Onboarding completion / failure emails.** When Phase-2 cloud onboarding finishes (or fails 3 times),
+  PSConsole emails a summary — groups, license, Intune primary user, and anything needing manual follow-up.
+  The recipient is chosen by the **creator's role**: an admin-created onboarding notifies the admin address, a
+  helpdesk-created one notifies the helpdesk address (both configurable in `smtp.config.json`).
+- **Onboarding "Mark resolved" action.** A per-row button on the onboarding page force-completes a stuck
+  (partial / manual-needed) record when the outstanding work was done by hand outside PSConsole — it stops the
+  automatic retries, suppresses further email, and stamps who/when. Helpdesk + admin.
+- **Veeam FAILED / WARNING email alerts.** Every 2 hours PSConsole checks recent Veeam sessions and emails an
+  alert for any new failed or warning backup — failures are flagged "remediation required" with a link to the
+  Backup Status Report list; warnings are informational. Deduplicated so each session alerts once. Recipient
+  and remediation link are configurable (`smtp.config.json`). No-op unless the Veeam add-on is configured.
+- **gMSA ADSync trigger setup script** (`graph-setup\Setup-AdSyncGmsaTask.ps1`). Idempotently provisions a
+  group Managed Service Account and a scheduled task on the Entra Connect server to run delta syncs with **no
+  stored password** — compatible with hardened domains that block credential storage (CIS L2).
+
+### Changed
+- **Onboarding page auto-clears completed records after 7 days** (only completed — failed / manual-needed
+  records stay until resolved). The cloud-onboarding auto-processor now runs every **3 minutes** (was 5), to
+  stay a step ahead of a ~5-minute Entra Connect delta sync so new users onboard promptly.
+
+### Fixed
+- **Clearer Graph write errors.** When Microsoft Graph returns an error with no JSON body, PSConsole now
+  surfaces the HTTP status + reason (e.g. "HTTP 400 Bad Request") instead of an opaque ".NET remote server"
+  message — visible on the onboarding page and in notifications.
+
+## [1.11.0] - 2026-07-11
+
+### Added
+- **Intune "device primary user" report** (`28-Get-IntuneDevicePrimaryUser.ps1`) — lists each managed
+  device's primary user (device name -> UPN / display name). Read-only, `DeviceManagementManagedDevices.Read.All`.
+- **Create User: optional "Intune device name".** When set, the new user is made the **primary user** of that
+  Intune device. Because a brand-new account isn't addressable in the cloud until it syncs to Entra, this is
+  applied by the **cloud-onboarding processor** (like cloud groups/license), which resolves the device by name
+  and sets the primary user; it retries on later runs if the device isn't enrolled yet. **Requires** the
+  graph-write app to hold **`DeviceManagementManagedDevices.ReadWrite.All`** (new permission + admin consent).
+  Field only appears when the Intune add-on is enabled; leaving it blank is a no-op.
+- **Scheduled reports: admin oversight.** Admins can switch to an **All schedules** view (owner column) and
+  **edit, run, delete, or create** a schedule **for another user** (an optional Owner field) — to support
+  helpdesk. Per-user isolation is unchanged for helpdesk (they still see/manage only their own).
+
+## [1.10.0] - 2026-07-10
+
+### Added
+- **Scheduled reports for helpdesk, scoped per user.** Helpdesk users can now create scheduled reports, and
+  every user (admin or helpdesk) sees and manages **only their own** schedules — the owner is stamped on save,
+  and run/edit/delete are restricted to the owner. A server-side role gate ensures a helpdesk user can only
+  schedule `HelpDesk`-tagged scripts (admin-only scripts like the Veeam report stay admin-only).
+
+### Changed
+- **Reports** is now visible in the sidebar for helpdesk.
+- **Create User:** trimmed the helper text under "Require password change at first logon" — kept the
+  "on by default" note, removed the service/shared-account guidance.
+
+### Internal
+- Removed the dead/misleading role argument from the route `Require` helper; authorization is decided solely
+  by the action via `Test-Authorized` (single source of truth). Behavior unchanged — verified helpdesk is
+  still denied Config, Audit, and Veeam.
+
+## [1.9.1] - 2026-07-10
+
+### Security
+Hardening pass across the codebase (with an independent second-model verification pass). All fixes were
+verified functional before and after.
+- **Authentication bypass (empty-password LDAP bind) fixed.** Active Directory treats an LDAP *simple* bind
+  with a valid username and an empty password as an anonymous/unauthenticated bind that returns success -
+  which allowed a valid-username + blank-password login to resolve to a real (incl. admin) role. Blank and
+  whitespace-only passwords are now rejected before any bind attempt (`Invoke-Authenticate` + defence in
+  `Test-LdapCredential`).
+- **LDAP filter injection** hardened: `Resolve-LdapRole` (Auth.ps1) and `Resolve-UserDN`
+  (UserProvision.ps1) now escape filter values (RFC 4515), and `05-Get-GroupMembership.ps1` escapes
+  its `-GroupName` parameter. Previously a crafted value (e.g. `*`) was interpreted as a wildcard.
+- **Graph OData injection** hardened: `10-Get-EntraUserDetail.ps1` and `18-Get-EntraSignInFailures.ps1`
+  now escape single quotes in the `-UserPrincipalName` filter (matching `19-Get-EntraGroupMembers.ps1`);
+  `10` also no longer interpolates the raw UPN into a Graph URL *path* (uses the resolved object id).
+- **DN (RDN) escaping** in on-prem user creation: a display name containing DN metacharacters (e.g.
+  `Smith, Jr`) is now escaped (RFC 4514) so it can't break or relocate the new object's CN.
+- **Reflected XSS** fixed on the `?e=` message parameter of the **login** page (unauthenticated) and the
+  **department-mapping** page - both are now HTML-encoded.
+- **DOM XSS** hardened on the Veeam page: the job rows embedded in an inline `<script>` now escape
+  `<`, `>`, `&` (so a hostile job name can't break out of the script block).
+- **Output encoding** strengthened: `ConvertTo-PSCEncoded` now also encodes single quotes (`&#39;`); the
+  top-bar username chip (Layout.ps1) and the Config page's LDAP server / role-group fields are now encoded.
+- **Session cookie** now `HttpOnly` + `Secure`.
+- **Security response headers** added: `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`,
+  `Strict-Transport-Security`.
+- **Fail-closed script role**: a catalog script with no `.ROLE` tag now defaults to **Admin** (was
+  HelpDesk). All shipped scripts declare `.ROLE`, so visibility is unchanged.
+
+### Known / accepted (see SECURITY notes)
+- No login rate-limiting yet; DPAPI secrets are `LocalMachine`-scoped (mitigated by locked-down `data\`
+  NTFS ACLs); the graph-write app's broad permissions and the admin role's script-execution capability
+  are inherent trust boundaries. Documented for follow-up.
+
 ## [1.9.0] - 2026-07-10
 
 ### Added

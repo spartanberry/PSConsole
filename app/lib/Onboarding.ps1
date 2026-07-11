@@ -86,6 +86,24 @@ function Invoke-Onboarding {
         }
         $exoAdded = @($exoAdded | Select-Object -Unique)
 
+        # 5) Intune primary user (optional) - make this new user the primary user of the named device.
+        #    Resolve the device via the READ app; set primary user via the WRITE app (needs
+        #    DeviceManagementManagedDevices.ReadWrite.All). Retries next run if the device isn't enrolled yet.
+        $idev = [string]$rec.intuneDevice
+        if ($idev -and -not $rec.intunePrimaryDone) {
+            try {
+                $dflt = [uri]::EscapeDataString("deviceName eq '$($idev -replace "'","''")'")
+                $md   = @(Invoke-Graph "/deviceManagement/managedDevices?`$filter=$dflt&`$select=id,deviceName")
+                if (-not $md.Count)      { $failed += "Intune device '$idev' not found (not enrolled yet?)" }
+                elseif ($md.Count -gt 1) { $failed += "Intune device '$idev' matches $($md.Count) devices - set primary user manually" }
+                else {
+                    $pr = Set-IntuneDevicePrimaryUser -DeviceId ([string]$md[0].id) -UserId $u.id
+                    if ($pr.ok) { Set-RecProp $rec 'intunePrimaryDone' $true; Set-RecProp $rec 'intuneDeviceId' ([string]$md[0].id) }
+                    else        { $failed += "Intune primary user for '$idev': $($pr.error)" }
+                }
+            } catch { $failed += "Intune device '$idev': $($_.Exception.Message)" }
+        }
+
         Set-RecProp $rec 'groupsAdded'      @($added)
         Set-RecProp $rec 'groupsExo'        @($exoAdded)
         Set-RecProp $rec 'groupsAuto'       @($auto)
@@ -102,10 +120,47 @@ function Invoke-Onboarding {
             Set-RecProp $rec 'cloudStatus' 'manual-needed'; Set-RecProp $rec 'note' 'cloud done; mail-enabled groups need manual add'; $summary.partial++
         } else {
             Set-RecProp $rec 'cloudStatus' 'complete'; Set-RecProp $rec 'note' 'complete'; $summary.completed++
+            if (-not $rec.completedAt) { Set-RecProp $rec 'completedAt' (Get-Date).ToString('o') }
+        }
+
+        # Email the outcome ONCE (createdByRole picks admin vs helpdesk recipient). complete/manual-needed
+        # -> success notice; partial -> failure notice, but only after >=3 attempts so transient lags
+        # (usageLocation commit, Intune access propagation) get a chance to self-heal first.
+        if (-not $rec.notified) {
+            $st = [string]$rec.cloudStatus
+            $nrole = if ($rec.createdByRole) { [string]$rec.createdByRole } else { 'admin' }
+            if ($st -eq 'complete' -or $st -eq 'manual-needed') {
+                try { Send-OnboardingOutcomeNotification -Rec $rec -Role $nrole -Outcome 'complete' | Out-Null } catch {}
+                Set-RecProp $rec 'notified' $true
+            } elseif ($st -eq 'partial' -and ([int]$rec.attempts) -ge 3) {
+                try { Send-OnboardingOutcomeNotification -Rec $rec -Role $nrole -Outcome 'failed' | Out-Null } catch {}
+                Set-RecProp $rec 'notified' $true
+            }
         }
     }
     } finally { Disconnect-Exo }
 
     Set-Store onboarding $queue
     [pscustomobject]$summary
+}
+
+# Drop COMPLETE onboarding records older than $Days from the queue so the page doesn't accumulate
+# finished users (the completion email is the record of them). Only 'complete' is pruned - partial /
+# manual-needed / waiting stay put because they still need attention. Returns the count removed.
+function Clear-CompletedOnboarding {
+    param([int]$Days = 7)
+    $q = @(Get-Store onboarding)
+    if (-not $q.Count) { return 0 }
+    $cutoff = (Get-Date).AddDays(-[math]::Abs($Days))
+    $keep = @($q | Where-Object {
+        if ([string]$_.cloudStatus -ne 'complete') { return $true }           # keep anything not complete
+        $stamp = if ($_.completedAt) { [string]$_.completedAt } else { [string]$_.lastRun }
+        if (-not $stamp) { return $true }                                      # no timestamp -> keep (safety)
+        $ts = [datetime]::MinValue
+        if (-not [datetime]::TryParse($stamp, [ref]$ts)) { return $true }      # unparseable -> keep
+        return ($ts -gt $cutoff)                                               # keep only if within the window
+    })
+    $removed = $q.Count - $keep.Count
+    if ($removed -gt 0) { Set-Store onboarding $keep }
+    $removed
 }
