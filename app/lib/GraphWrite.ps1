@@ -29,9 +29,9 @@ function Get-GraphWriteToken {
 # $Body may be a hashtable (JSON-encoded here) or a pre-built JSON string (used where PS 5.1's
 # single-element-array collapse would otherwise corrupt the payload, e.g. assignLicense).
 function Invoke-GraphWrite {
-    param([ValidateSet('GET','POST','PATCH','PUT','DELETE')][string]$Method,[string]$Uri,$Body,[hashtable]$Headers)
+    param([ValidateSet('GET','POST','PATCH','PUT','DELETE')][string]$Method,[string]$Uri,$Body,[hashtable]$Headers,[switch]$Beta)
     $tok = Get-GraphWriteToken
-    if ($Uri -notmatch '^https?://') { $Uri = 'https://graph.microsoft.com/v1.0' + $Uri }
+    if ($Uri -notmatch '^https?://') { $Uri = "https://graph.microsoft.com/$(if ($Beta) { 'beta' } else { 'v1.0' })" + $Uri }
     $hdr = @{ Authorization = "Bearer $tok" }
     if ($Headers) { foreach ($k in $Headers.Keys) { $hdr[$k] = $Headers[$k] } }
     $p = @{ Method=$Method; Uri=$Uri; Headers=$hdr }
@@ -43,14 +43,33 @@ function Invoke-GraphWrite {
 }
 
 # Pull the meaningful Graph error text out of an ErrorRecord. Invoke-RestMethod puts the response
-# JSON body in .ErrorDetails.Message (where Graph's real "code/message" lives); .Exception.Message is
-# only the generic "Response status code..." string. Fall back to the latter if no body.
+# JSON body in .ErrorDetails.Message (where Graph's real "code/message" lives). Preference order:
+#   1) parsed Graph "code: message" from the JSON body,
+#   2) the raw body if it isn't the expected JSON shape,
+#   3) HTTP status + reason phrase (e.g. "HTTP 400 Bad Request") - some 400/404s come back with an
+#      empty body, and this is far more useful than the opaque .Exception.Message,
+#   4) the generic .Exception.Message as a last resort.
 function Get-GraphError($err) {
     $body = $null
     if ($err.ErrorDetails -and $err.ErrorDetails.Message) { $body = $err.ErrorDetails.Message }
     if ($body) {
         try { $j = $body | ConvertFrom-Json; if ($j.error -and $j.error.message) { return "$($j.error.code): $($j.error.message)" } } catch {}
         return $body
+    }
+    # No JSON error body - surface the HTTP status + reason phrase instead of the opaque
+    # "The remote server returned an error: (400) Bad Request." (WinPS 5.1 = HttpWebResponse with
+    # .StatusDescription; PS7 = HttpResponseMessage with .ReasonPhrase - handle both.)
+    $resp = $null
+    if ($err.Exception -and ($err.Exception.PSObject.Properties.Name -contains 'Response')) { $resp = $err.Exception.Response }
+    if ($resp) {
+        $code = $null; $reason = $null
+        try { $code = [int]$resp.StatusCode } catch {}
+        try { $reason = [string]$resp.StatusDescription } catch {}
+        if (-not $reason) { try { $reason = [string]$resp.ReasonPhrase } catch {} }
+        if ($code) {
+            if ($reason) { return "HTTP $code $reason" }
+            return "HTTP $code"
+        }
     }
     "$($err.Exception.Message)"
 }
@@ -72,6 +91,20 @@ function Set-EntraUsageLocation {
     param([string]$UserId,[string]$UsageLocation)
     try { Invoke-GraphWrite -Method PATCH -Uri "/users/$UserId" -Body @{ usageLocation = $UsageLocation } | Out-Null; return @{ ok=$true } }
     catch { return @{ ok=$false; error="$($_.Exception.Message)" } }
+}
+
+# Set the PRIMARY user of an Intune managed device (beta endpoint). Removes any existing primary-user
+# reference first (best-effort), then assigns the new one. Requires the write app to hold
+# DeviceManagementManagedDevices.ReadWrite.All. Returns @{ ok; error }.
+function Set-IntuneDevicePrimaryUser {
+    param([string]$DeviceId,[string]$UserId)
+    if (-not $DeviceId -or -not $UserId) { return @{ ok=$false; error='missing device or user id' } }
+    $ref = "/deviceManagement/managedDevices/$DeviceId/users/`$ref"
+    try { Invoke-GraphWrite -Method DELETE -Uri $ref -Beta | Out-Null } catch {}   # clear existing primary user (ok if none)
+    try {
+        Invoke-GraphWrite -Method POST -Uri $ref -Beta -Body @{ '@odata.id' = "https://graph.microsoft.com/beta/users/$UserId" } | Out-Null
+        return @{ ok=$true }
+    } catch { return @{ ok=$false; error=(Get-GraphError $_) } }
 }
 
 # assignLicense body is built as a raw JSON string on purpose - PS 5.1 collapses a single-element

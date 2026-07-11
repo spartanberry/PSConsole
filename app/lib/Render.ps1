@@ -5,7 +5,9 @@
 function ConvertTo-PSCEncoded {
     param([string]$Text)
     if ($null -eq $Text) { return '' }
-    return ($Text -replace '&', '&amp;' -replace '<', '&lt;' -replace '>', '&gt;' -replace '"', '&quot;')
+    # Encode the full OWASP set incl. the single quote (&#39;) so values are safe in single-quoted
+    # attributes too, not just double-quoted ones. & must be first so it doesn't double-encode.
+    return ($Text -replace '&', '&amp;' -replace '<', '&lt;' -replace '>', '&gt;' -replace '"', '&quot;' -replace "'", '&#39;')
 }
 
 # Inline formatting, applied to already-encoded text: `code`, **bold**, [text](http(s)://url)

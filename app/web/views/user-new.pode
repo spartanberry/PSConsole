@@ -13,6 +13,7 @@ $(if(-not $data.departments -or $data.departments.Count -eq 0){'<div class="aler
     <div><label>Department</label><select id="department" onchange="deptChanged()"><option value="">-- select --</option>$(foreach($d in $data.departments){"<option>$d</option>"})</select></div>
     <div><label>Mobile phone <span class="note">- optional</span></label><input id="mobile" placeholder="(555) 555-5555"></div>
     <div><label>Supervisor <span class="note">- optional</span></label>$(if($data.hasSupervisors){"<select id=`"manager`"><option value=`"`">-- select supervisor --</option>$($data.supervisorOptions)</select>"}else{"<input id=`"manager`" placeholder=`"UPN, username, or display name`"><span class=`"note`"> (Supervisors group unavailable - type manually)</span>"})</div>
+    $(if($data.intuneOn){'<div><label>Intune device name <span class="note">- optional</span></label><input id="intuneDevice" placeholder="e.g. LAPTOP-1234"><span class="note">Sets the new user as this device primary user in Intune, applied after Entra sync.</span></div>'})
   </div>
   <div id="deptData" data-jobs="$($data.deptJobs)" style="display:none"></div>
   <div id="jobTitlesRow" style="margin-top:8px"></div>
@@ -40,7 +41,7 @@ $(if(-not $data.departments -or $data.departments.Count -eq 0){'<div class="aler
     </div>
     <label style="display:inline-flex;align-items:center;gap:8px;font-weight:normal;margin:4px 0 12px">
       <input type="checkbox" id="mustChangePwd" checked style="width:auto"><b>Require password change at first logon</b>
-      <span class="note">- on by default; uncheck for service or shared accounts that shouldn't be prompted</span>
+      <span class="note">- on by default</span>
     </label>
     <button onclick="create()">Create user</button>
   </div>
@@ -58,7 +59,7 @@ function deptChanged(){
     jobs.map(function(j){return '<label style="display:inline-flex;align-items:center;gap:6px;margin:0 16px 6px 0;font-weight:normal"><input type="checkbox" class="jobtitle" value="'+esc(j)+'" style="width:auto">'+esc(j)+'</label>';}).join('');
 }
 function selectedJobs(){return Array.from(document.querySelectorAll('.jobtitle:checked')).map(function(c){return c.value;}).join('|');}
-function gather(){var s=document.getElementById('isSupervisor');return {firstName:val('firstName'),lastName:val('lastName'),username:val('username'),department:val('department'),manager:val('manager'),jobTitles:selectedJobs(),mobile:val('mobile'),isSupervisor:(s&&s.checked)?'true':'false'};}
+function gather(){var s=document.getElementById('isSupervisor');var dv=document.getElementById('intuneDevice');return {firstName:val('firstName'),lastName:val('lastName'),username:val('username'),department:val('department'),manager:val('manager'),jobTitles:selectedJobs(),mobile:val('mobile'),isSupervisor:(s&&s.checked)?'true':'false',intuneDevice:(dv?dv.value:'')};}
 // Auto-suggest username as first-initial + last name (convention), until the field is edited by hand.
 var _userEdited=false;
 document.getElementById('username').addEventListener('input',function(){_userEdited=true;});
@@ -78,7 +79,8 @@ function planRows(p){
    row('Cloud groups',(p.cloudGroups&&p.cloudGroups.length)?p.cloudGroups.join(', '):'<span class="note">none mapped</span>')+
    row('Supervisor group',p.isSupervisor?'<b>YES</b> - added to Supervisors':'<span class="note">no</span>')+
    row('License group',p.licenseGroup||'<span class="note">none</span>')+
-   row('Manager',p.manager||'<span class="note">none</span>')+'</table>';
+   row('Manager',p.manager||'<span class="note">none</span>')+
+   row('Intune device',p.intuneDevice?esc(p.intuneDevice)+' <span class="note">(primary user set after sync)</span>':'<span class="note">none</span>')+'</table>';
 }
 function row(k,v){return '<tr><td class="k">'+k+'</td><td>'+v+'</td></tr>';}
 function errList(errs){return '<ul class="err">'+errs.map(e=>'<li>'+esc(e)+'</li>').join('')+'</ul>';}

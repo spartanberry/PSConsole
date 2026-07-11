@@ -37,12 +37,13 @@ function Invoke-Graph { param([string]$Uri,[switch]$Beta)
 
 # signInActivity can't be $select'd when addressing a user by UPN (Graph requires the object id/GUID),
 # so query the collection with a filter instead - that form supports signInActivity in one call.
-$u = (Invoke-Graph ("/users?`$filter=userPrincipalName eq '$UserPrincipalName'&`$select=displayName,userPrincipalName,accountEnabled,userType,jobTitle,department,createdDateTime,signInActivity,assignedLicenses,onPremisesSyncEnabled,id"))[0]
+$upnF = $UserPrincipalName -replace "'", "''"   # escape single quotes for the OData string literal
+$u = (Invoke-Graph ("/users?`$filter=userPrincipalName eq '$upnF'&`$select=displayName,userPrincipalName,accountEnabled,userType,jobTitle,department,createdDateTime,signInActivity,assignedLicenses,onPremisesSyncEnabled,id"))[0]
 if (-not $u) { throw "No user found with UPN '$UserPrincipalName'." }
 $skus = @{}; Invoke-Graph '/subscribedSkus' | ForEach-Object { $skus[$_.skuId] = $_.skuPartNumber }
 $lic = (@($u.assignedLicenses) | ForEach-Object { $skus[$_.skuId] }) -join ', '
 $mfa = $null; try { $mfa = (Invoke-Graph "/reports/authenticationMethods/userRegistrationDetails/$($u.id)")[0] } catch {}
-$mgr = $null; try { $mgr = (Invoke-Graph "/users/$UserPrincipalName/manager")[0].userPrincipalName } catch {}
+$mgr = $null; try { $mgr = (Invoke-Graph "/users/$($u.id)/manager")[0].userPrincipalName } catch {}   # use the resolved id, not the raw UPN, in the path
 [PSCustomObject]@{
     UserPrincipalName = $u.userPrincipalName
     DisplayName       = $u.displayName

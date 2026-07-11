@@ -103,6 +103,7 @@ function Get-NotifyRecipients([string]$Event) {
     $list = switch ($Event) {
         'create'       { $c.createTo }
         'decommission' { $c.decommissionTo }
+        'veeam-alert'  { $c.veeamAlertTo }
         default        { $c.to }
     }
     $list = @($list) | Where-Object { $_ }
@@ -131,6 +132,103 @@ function Send-UserCreatedNotification {
             (New-NotifyRow 'When'         ((Get-Date).ToString('yyyy-MM-dd HH:mm'))) +
             "</table><p style='color:#888;font-size:12px'>Sent by PSConsole. Cloud groups/license are applied after the account syncs to Entra.</p></div>"
     Send-PSCMail -To (Get-NotifyRecipients 'create') -Subject "PSConsole: user created - $($Plan.displayName)" -BodyHtml $body
+}
+
+# Role-based recipients for a Phase-2 onboarding outcome email:
+#   admin (or anything not 'helpdesk') -> onboardAdminTo, falling back to createTo then to.
+#   helpdesk                           -> onboardHelpdeskTo, falling back to createTo then to.
+# (createTo is the Phase-1 "user created" recipient, so admin onboarding mail lands with the same person.)
+function Get-OnboardNotifyRecipients([string]$Role) {
+    if (-not (Test-SmtpConfigured)) { return @() }
+    try { $c = Get-Content (Get-SmtpConfigPath) -Raw | ConvertFrom-Json } catch { return @() }
+    $list = if ($Role -eq 'helpdesk') { $c.onboardHelpdeskTo } else { $c.onboardAdminTo }
+    $list = @($list) | Where-Object { $_ }
+    if (-not $list.Count) { $list = @($c.createTo) | Where-Object { $_ } }
+    if (-not $list.Count) { $list = @($c.to)       | Where-Object { $_ } }
+    @($list)
+}
+
+# Email the outcome of Phase-2 cloud onboarding for one record. $Outcome is 'complete' or 'failed'.
+# Best-effort (Send-PSCMail never throws). Recipient is chosen by the creator's role.
+function Send-OnboardingOutcomeNotification {
+    param([pscustomobject]$Rec,[string]$Role,[ValidateSet('complete','failed')][string]$Outcome)
+    $added  = if (@($Rec.groupsAdded).Count)  { (@($Rec.groupsAdded)  -join ', ') } else { '(none)' }
+    $auto   = if (@($Rec.groupsAuto).Count)   { (@($Rec.groupsAuto)   -join ', ') } else { '(none)' }
+    $exo    = if (@($Rec.groupsExo).Count)    { (@($Rec.groupsExo)    -join ', ') } else { '(none)' }
+    $manual = if (@($Rec.groupsManual).Count) { (@($Rec.groupsManual) -join ', ') } else { '(none)' }
+    $failed = if (@($Rec.groupsFailed).Count) { (@($Rec.groupsFailed) -join ', ') } else { '(none)' }
+    $intune = if ($Rec.intuneDevice) { "$($Rec.intuneDevice) - $(if ($Rec.intunePrimaryDone) { 'primary user set' } else { 'NOT set' })" } else { '(none)' }
+    $hdr = if ($Outcome -eq 'complete') { 'Cloud onboarding complete' } else { "Cloud onboarding FAILED (after $([int]$Rec.attempts) attempts)" }
+    $body = "<div style='font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#111'>" +
+            "<h2 style='margin:0 0 8px'>$hdr</h2>" +
+            "<table style='border-collapse:collapse'>" +
+            (New-NotifyRow 'Display name'         $Rec.displayName) +
+            (New-NotifyRow 'Sign-in (UPN)'        $Rec.upn) +
+            (New-NotifyRow 'Department'           $Rec.department) +
+            (New-NotifyRow 'Final status'         $Rec.cloudStatus) +
+            (New-NotifyRow 'License'              $Rec.licenseStatus) +
+            (New-NotifyRow 'Groups added'         $added) +
+            (New-NotifyRow 'Dynamic (automatic)'  $auto) +
+            (New-NotifyRow 'Exchange groups'      $exo) +
+            (New-NotifyRow 'Manual groups needed' $manual) +
+            (New-NotifyRow 'Failures'             $failed) +
+            (New-NotifyRow 'Intune device'        $intune) +
+            (New-NotifyRow 'Created by'           $Rec.createdBy) +
+            (New-NotifyRow 'When'                 ((Get-Date).ToString('yyyy-MM-dd HH:mm'))) +
+            "</table><p style='color:#888;font-size:12px'>Sent by PSConsole - Phase 2 (cloud) onboarding.</p></div>"
+    $subj = if ($Outcome -eq 'complete') { "PSConsole: onboarding complete - $($Rec.displayName)" }
+            else                          { "PSConsole: onboarding FAILED - $($Rec.displayName)" }
+    Send-PSCMail -To (Get-OnboardNotifyRecipients $Role) -Subject $subj -BodyHtml $body
+}
+
+# Email a Veeam backup alert summarizing NEW Failed/Warning sessions (one message, table of jobs).
+# Failed rows are flagged "Remediation required" with a link to the Backup Status Report list (if
+# veeamRemediationUrl is set in smtp.config.json); Warning rows are informational. Best-effort.
+function Send-VeeamAlertNotification {
+    param([object[]]$Sessions)
+    $rows = @($Sessions) | Where-Object { $_ }
+    if (-not $rows.Count) { return @{ ok=$false; note='no sessions' } }
+    $failed = @($rows | Where-Object { "$($_.Result)" -eq 'Failed'  })
+    $warn   = @($rows | Where-Object { "$($_.Result)" -eq 'Warning' })
+    $remUrl = ''
+    if (Test-SmtpConfigured) { try { $remUrl = [string]((Get-Content (Get-SmtpConfigPath) -Raw | ConvertFrom-Json).veeamRemediationUrl) } catch {} }
+
+    $tbl = New-Object System.Text.StringBuilder
+    [void]$tbl.Append("<table style='border-collapse:collapse;font-size:13px'><tr>")
+    foreach ($col in 'Job','Result','Started','Ended','Duration','Action') {
+        [void]$tbl.Append("<th style='border:1px solid #ccc;padding:4px 8px;background:#f3f4f6;text-align:left'>$col</th>")
+    }
+    [void]$tbl.Append('</tr>')
+    foreach ($s in @($failed + $warn)) {                       # failed first, then warnings
+        $res   = "$($s.Result)"
+        $color = if ($res -eq 'Failed') { '#b91c1c' } else { '#b45309' }
+        $dur = ''
+        try { if ($s.Start -and $s.End) { $ts = [datetime]$s.End - [datetime]$s.Start; $dur = ('{0:0}:{1:00}:{2:00}' -f [int]$ts.TotalHours, $ts.Minutes, $ts.Seconds) } } catch {}
+        $st = try { ([datetime]$s.Start).ToString('yyyy-MM-dd HH:mm') } catch { [string]$s.Start }
+        $en = try { ([datetime]$s.End).ToString('yyyy-MM-dd HH:mm') }   catch { [string]$s.End }
+        $action = if ($res -eq 'Failed') { 'Remediation required' } else { 'Informational - no action' }
+        [void]$tbl.Append('<tr>')
+        [void]$tbl.Append("<td style='border:1px solid #ccc;padding:4px 8px'>$(ConvertTo-PSCEncoded ([string]$s.Job))</td>")
+        [void]$tbl.Append("<td style='border:1px solid #ccc;padding:4px 8px;color:$color;font-weight:bold'>$(ConvertTo-PSCEncoded $res)</td>")
+        [void]$tbl.Append("<td style='border:1px solid #ccc;padding:4px 8px'>$(ConvertTo-PSCEncoded $st)</td>")
+        [void]$tbl.Append("<td style='border:1px solid #ccc;padding:4px 8px'>$(ConvertTo-PSCEncoded $en)</td>")
+        [void]$tbl.Append("<td style='border:1px solid #ccc;padding:4px 8px'>$(ConvertTo-PSCEncoded $dur)</td>")
+        [void]$tbl.Append("<td style='border:1px solid #ccc;padding:4px 8px'>$(ConvertTo-PSCEncoded $action)</td>")
+        [void]$tbl.Append('</tr>')
+    }
+    [void]$tbl.Append('</table>')
+
+    $remLink = if ($failed.Count -and $remUrl) { "<p>Remediate failed jobs in the <a href='$(ConvertTo-PSCEncoded $remUrl)'>Backup Status Report list</a>.</p>" }
+               elseif ($failed.Count)          { "<p>Remediate failed jobs in the Backup Status Report list (PSConsole &rsaquo; Veeam &rsaquo; Remediation).</p>" }
+               else                            { '' }
+    $summary = "$($failed.Count) failed, $($warn.Count) warning"
+    $body = "<div style='font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#111'>" +
+            "<h2 style='margin:0 0 8px'>Veeam backup alert - $summary</h2>" +
+            $tbl.ToString() + $remLink +
+            "<p style='color:#888;font-size:12px'>Sent by PSConsole. Warnings are informational; failed jobs require remediation.</p></div>"
+    $subj = if ($failed.Count) { "PSConsole: Veeam backup FAILED ($($failed.Count)) - action required" }
+            else               { "PSConsole: Veeam backup warning ($($warn.Count))" }
+    Send-PSCMail -To (Get-NotifyRecipients 'veeam-alert') -Subject $subj -BodyHtml $body
 }
 
 function Send-UserDecommissionedNotification {

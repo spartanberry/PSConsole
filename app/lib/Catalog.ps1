@@ -44,7 +44,8 @@ function Get-ScriptMeta {
         elseif ($line -match '^\s*\.ROLE\s+(.+?)\s*$')     { $role = $Matches[1] }
     }
     if (-not $cat)  { $cat  = Get-ScriptCategoryFromName $name }
-    if (-not $role) { $role = 'HelpDesk' }
+    # Fail-closed: an untagged script is admin-only until it explicitly declares '.ROLE HelpDesk'.
+    if (-not $role) { $role = 'Admin' }
     [PSCustomObject]@{ Name = $name; Category = $cat; Role = $role }
 }
 

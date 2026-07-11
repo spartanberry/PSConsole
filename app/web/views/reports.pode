@@ -5,56 +5,81 @@ $(if($data.msg){ if($data.msg -eq 'Saved'){'<div class="alert ok">Saved.</div>'}
 $(if(-not $data.smtpOk){'<div class="alert warn"><b>Email is not configured.</b> You can define reports, but they will not send until SMTP is set up with <code>graph-setup\Set-SmtpConfig.ps1</code>.</div>'})
 
 <div class="card">
-  <h3>Scheduled reports</h3>
-  <div style="overflow-x:auto"><table>
-    <tr><th>Report</th><th>When</th><th>Recipients</th><th>On</th><th>Last run</th><th></th></tr>
+  <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+    <h3 style="margin:0">Scheduled reports</h3>
+    $(if($data.isAdmin){ if($data.viewAll){'<span class="note">Showing <b>all users</b>. </span><a href="/admin/reports" style="margin-left:auto">My schedules</a>'}else{'<span class="note">Showing <b>yours</b>. </span><a href="/admin/reports?scope=all" style="margin-left:auto">All schedules &rarr;</a>'} })
+  </div>
+  <div style="overflow-x:auto;margin-top:10px"><table>
+    <tr><th>Report</th>$(if($data.viewAll){'<th>Owner</th>'})<th>When</th><th>Recipients</th><th>On</th><th>Last run</th><th></th></tr>
     $($data.rowsHtml)
-    $(if(-not $data.rowsHtml){'<tr><td colspan="6" class="note">No scheduled reports yet. Add one below.</td></tr>'})
+    $(if(-not $data.rowsHtml){'<tr><td colspan="'+$(if($data.viewAll){'7'}else{'6'})+'" class="note">No scheduled reports yet. Add one below.</td></tr>'})
   </table></div>
 </div>
 
 <div class="card">
-  <h3>Add a report</h3>
-  <form method="post" action="/admin/reports/save">
+  <h3 id="formTitle">Add a report</h3>
+  <form method="post" action="/admin/reports/save" id="repForm">
+    <input type="hidden" name="id" id="f_id">
     <div class="grid2">
-      <div><label>Name</label><input name="name" placeholder="e.g. Daily disabled accounts" required></div>
-      <div><label>Script</label><select name="script">$($data.scriptOptions)</select></div>
+      <div><label>Name</label><input name="name" id="f_name" placeholder="e.g. Daily disabled accounts" required></div>
+      <div><label>Script</label><select name="script" id="f_script">$($data.scriptOptions)</select></div>
     </div>
+    $(if($data.isAdmin){'<label>Owner <span class="note">- optional; blank = yourself. Set a username to create or assign for another user.</span></label><input name="owner" id="f_owner" placeholder="username">'})
     <label>Recipients (comma-separated)</label>
-    <input name="recipients" placeholder="it@example.com, backups@example.com">
+    <input name="recipients" id="f_recipients" placeholder="it@example.com, backups@example.com">
     <div class="grid2">
       <div><label>Frequency</label><select name="frequency" id="freq" onchange="freqChg()"><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option></select></div>
       <div><label>Time</label><div style="display:flex;gap:6px">
-        <select name="hour">$((0..23 | ForEach-Object { "<option value='$_'$(if($_ -eq 7){' selected'})>$('{0:00}' -f $_)</option>" }) -join '')</select>
-        <select name="minute">$((0,15,30,45 | ForEach-Object { "<option value='$_'>$('{0:00}' -f $_)</option>" }) -join '')</select>
+        <select name="hour" id="f_hour">$((0..23 | ForEach-Object { "<option value='$_'$(if($_ -eq 7){' selected'})>$('{0:00}' -f $_)</option>" }) -join '')</select>
+        <select name="minute" id="f_minute">$((0,15,30,45 | ForEach-Object { "<option value='$_'>$('{0:00}' -f $_)</option>" }) -join '')</select>
       </div></div>
-      <div id="dowWrap" style="display:none"><label>Day of week</label><select name="dayOfWeek">$((0..6 | ForEach-Object { $n=@('Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday')[$_]; "<option value='$_'$(if($_ -eq 1){' selected'})>$n</option>" }) -join '')</select></div>
-      <div id="domWrap" style="display:none"><label>Day of month</label><select name="dayOfMonth">$((1..28 | ForEach-Object { "<option value='$_'>$_</option>" }) -join '')</select></div>
+      <div id="dowWrap" style="display:none"><label>Day of week</label><select name="dayOfWeek" id="f_dow">$((0..6 | ForEach-Object { $n=@('Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday')[$_]; "<option value='$_'$(if($_ -eq 1){' selected'})>$n</option>" }) -join '')</select></div>
+      <div id="domWrap" style="display:none"><label>Day of month</label><select name="dayOfMonth" id="f_dom">$((1..28 | ForEach-Object { "<option value='$_'>$_</option>" }) -join '')</select></div>
     </div>
     <label>Parameters (optional, one per line: <code>Name=Value</code>)</label>
-    <textarea name="params" rows="3" placeholder="Days=30"></textarea>
-    <label style="display:inline-flex;align-items:center;gap:8px;margin-top:10px"><input type="checkbox" name="enabled" value="true" checked style="width:auto"> Enabled</label>
-    <div><button type="submit">Save report</button></div>
+    <textarea name="params" id="f_params" rows="3" placeholder="Days=30"></textarea>
+    <label style="display:inline-flex;align-items:center;gap:8px;margin-top:10px"><input type="checkbox" name="enabled" id="f_enabled" value="true" checked style="width:auto"> Enabled</label>
+    <div style="margin-top:10px"><button type="submit" id="f_submit">Save report</button> <button type="button" class="secondary" id="f_cancel" style="display:none" onclick="location.href='$($data.backUrl)'">Cancel edit</button></div>
   </form>
 </div>
 
 <script>
+var EF = $($data.efJson);
+var VIEWALL = $(if($data.viewAll){'true'}else{'false'});
 function freqChg(){var f=document.getElementById('freq').value;document.getElementById('dowWrap').style.display=(f==='weekly')?'':'none';document.getElementById('domWrap').style.display=(f==='monthly')?'':'none';}
+function setSel(id,val){var el=document.getElementById(id);if(el){el.value=String(val);}}
+function repEdit(id){var q=VIEWALL?'&scope=all':'';location.href='/admin/reports?edit='+encodeURIComponent(id)+q;}
+function applyEdit(){
+  if(!EF||!EF.id){freqChg();return;}
+  document.getElementById('f_id').value=EF.id;
+  document.getElementById('f_name').value=EF.name||'';
+  document.getElementById('f_recipients').value=EF.recipients||'';
+  document.getElementById('f_params').value=EF.params||'';
+  setSel('f_script',EF.script);setSel('freq',EF.frequency);setSel('f_hour',EF.hour);setSel('f_minute',EF.minute);setSel('f_dow',EF.dayOfWeek);setSel('f_dom',EF.dayOfMonth);
+  document.getElementById('f_enabled').checked=!!EF.enabled;
+  var fo=document.getElementById('f_owner');if(fo){fo.value=EF.owner||'';}
+  document.getElementById('formTitle').textContent='Edit report';
+  document.getElementById('f_submit').textContent='Update report';
+  document.getElementById('f_cancel').style.display='';
+  freqChg();
+}
 async function repRun(id){
   if(!confirm('Run this report now and email it to its recipients?'))return;
   try{
     var r=await fetch('/admin/reports/run',{method:'POST',body:new URLSearchParams({id:id})});
     var j=await r.json();
     if(j.ok){alert('Ran OK: '+j.rows+' row(s). '+(j.mailed?'Emailed.':'NOT emailed ('+(j.mailError||j.mailNote||'no recipients / smtp off')+').'));}
-    else{alert('Script error: '+(j.error||'failed'));}
+    else{alert('Error: '+(j.error||'failed'));}
   }catch(e){alert('Request failed: '+e);}
   location.reload();
 }
 async function repDel(id){
   if(!confirm('Delete this scheduled report?'))return;
-  await fetch('/admin/reports/delete',{method:'POST',body:new URLSearchParams({id:id})});
+  var r=await fetch('/admin/reports/delete',{method:'POST',body:new URLSearchParams({id:id})});
+  var j=await r.json();if(!j.ok){alert(j.error||'Delete failed');}
   location.reload();
 }
+applyEdit();
 </script>
 
 $($data.close)

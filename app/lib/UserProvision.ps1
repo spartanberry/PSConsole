@@ -29,7 +29,7 @@ function Set-ProvisionSettings($Settings) { Set-Store provision $Settings }
 # Pure computation: derive the account fields from raw inputs + the chosen department mapping.
 # Needs no directory access, so it is safe to call for live preview.
 function Get-ProvisionPlan {
-    param([string]$FirstName,[string]$LastName,[string]$Username,[string]$Department,[string]$Manager,[string[]]$JobTitles,[string]$Mobile,[switch]$IsSupervisor)
+    param([string]$FirstName,[string]$LastName,[string]$Username,[string]$Department,[string]$Manager,[string[]]$JobTitles,[string]$Mobile,[switch]$IsSupervisor,[string]$IntuneDevice)
     $s = Get-ProvisionSettings
     $suffix = if ($s.upnSuffix) { $s.upnSuffix } else { (Get-Store config).ldapServer }
     $match = @($s.departments | Where-Object { $_.name -eq $Department })
@@ -72,6 +72,7 @@ function Get-ProvisionPlan {
         manager           = ([string]$Manager).Trim()
         mobile            = ([string]$Mobile).Trim()
         isSupervisor      = [bool]$IsSupervisor
+        intuneDevice      = ([string]$IntuneDevice).Trim()
         ou                = if ($dept) { [string]$dept.ou } else { '' }
         cloudGroups       = $cloudGroups
         departmentGroups  = if ($dept) { @($dept.cloudGroups) } else { @() }
@@ -95,6 +96,18 @@ function Test-ProvisionPlan([pscustomobject]$Plan) {
     return $errs
 }
 
+# Escape a value for safe use as an RDN attribute value in a DN (RFC 4514), so a display name containing
+# DN metacharacters (e.g. "Smith, Jr") can't break or relocate the created object's CN. For a normal name
+# with no special characters this returns the value unchanged. .Replace() is literal (non-regex).
+function ConvertTo-RdnValue([string]$v) {
+    if ([string]::IsNullOrEmpty($v)) { return $v }
+    $bs = [string][char]92
+    $v = $v.Replace($bs, $bs + $bs).Replace(',', $bs + ',').Replace('+', $bs + '+').Replace('"', $bs + '"').Replace('<', $bs + '<').Replace('>', $bs + '>').Replace(';', $bs + ';').Replace('=', $bs + '=')
+    if ($v.StartsWith('#') -or $v.StartsWith(' ')) { $v = $bs + $v }
+    if ($v.EndsWith(' ')) { $v = $v.Substring(0, $v.Length - 1) + $bs + ' ' }
+    $v
+}
+
 # Phase 1: create the on-prem AD user via ADSI, binding as the operator. UNTESTED until go-live;
 # only reachable when provisioning is enabled.
 function New-OnPremUser {
@@ -110,7 +123,7 @@ function New-OnPremUser {
         if ($null -eq $ou.Children) {
             throw "Could not bind to the target OU as operator '$OperatorUser'. Enter YOUR OWN AD username and password (the account authorized to create users) - not the new user's name - and confirm the OU '$($Plan.ou)' exists."
         }
-        $user = $ou.Children.Add("CN=$($Plan.displayName)", 'user')
+        $user = $ou.Children.Add("CN=$(ConvertTo-RdnValue $Plan.displayName)", 'user')
         $user.Properties['sAMAccountName'].Value    = $Plan.samAccountName
         $user.Properties['userPrincipalName'].Value = $Plan.userPrincipalName
         $user.Properties['givenName'].Value         = $Plan.firstName
@@ -140,7 +153,8 @@ function Resolve-UserDN($server,$idlike,$u,$p) {
         $root = New-Object System.DirectoryServices.DirectoryEntry("LDAP://$server", $u, $p)
         $ds = New-Object System.DirectoryServices.DirectorySearcher($root)
         $sam = ($idlike -split '\\')[-1] -replace '@.*$',''
-        $ds.Filter = "(&(objectCategory=person)(|(sAMAccountName=$sam)(userPrincipalName=$idlike)(displayName=$idlike)))"
+        $samF = ConvertTo-LdapFilterValue $sam; $idF = ConvertTo-LdapFilterValue $idlike
+        $ds.Filter = "(&(objectCategory=person)(|(sAMAccountName=$samF)(userPrincipalName=$idF)(displayName=$idF)))"
         $r = $ds.FindOne()
         if ($r) { return [string]$r.Properties['distinguishedname'][0] }
     } catch {}
@@ -149,26 +163,30 @@ function Resolve-UserDN($server,$idlike,$u,$p) {
 
 # Queue the cloud work (group/license) to be applied once Entra Connect syncs the new user.
 function Add-OnboardingPending {
-    param([pscustomobject]$Plan,[string]$Operator,[string]$Dn)
+    param([pscustomobject]$Plan,[string]$Operator,[string]$OperatorRole,[string]$Dn)
     $q = @(Get-Store onboarding)
     $q += [pscustomobject]@{
-        id           = [guid]::NewGuid().ToString()
-        upn          = $Plan.userPrincipalName
-        displayName  = $Plan.displayName
-        department   = $Plan.department
-        title        = $Plan.title
-        mobile       = $Plan.mobile
-        cloudGroups  = @($Plan.cloudGroups)
-        dn           = $Dn
-        createdBy    = $Operator
-        createdAt    = (Get-Date).ToString('o')
-        cloudStatus  = 'pending-sync'
-        groupsAdded  = @()
-        groupsExo    = @()
-        groupsFailed = @()
-        attempts     = 0
-        lastRun      = ''
-        note         = 'queued'
+        id            = [guid]::NewGuid().ToString()
+        upn           = $Plan.userPrincipalName
+        displayName   = $Plan.displayName
+        department    = $Plan.department
+        title         = $Plan.title
+        mobile        = $Plan.mobile
+        cloudGroups   = @($Plan.cloudGroups)
+        intuneDevice  = [string]$Plan.intuneDevice
+        dn            = $Dn
+        createdBy     = $Operator
+        createdByRole = $OperatorRole          # drives the completion/failure email recipient (admin vs helpdesk)
+        createdAt     = (Get-Date).ToString('o')
+        cloudStatus   = 'pending-sync'
+        groupsAdded   = @()
+        groupsExo     = @()
+        groupsFailed  = @()
+        attempts      = 0
+        lastRun       = ''
+        note          = 'queued'
+        notified      = $false                 # completion/failure email sent once, then suppressed
+        completedAt   = ''                      # stamped when first reaching 'complete' (drives 7-day cleanup)
     }
     Set-Store onboarding $q
 }

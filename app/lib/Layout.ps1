@@ -109,7 +109,7 @@ function Get-AppChrome {
         @{ href='/users/new';           key='create';       label='Create User';   icon=$script:PSCIcons.create;       show=$true }
         @{ href='/users/onboarding';    key='onboarding';   label='Onboarding';    icon=$script:PSCIcons.onboarding;   show=$true }
         @{ href='/users/decommission';  key='decommission'; label='Decommission';  icon=$script:PSCIcons.decommission; show=$true }
-        @{ href='/admin/reports';       key='reports';      label='Reports';       icon=$script:PSCIcons.reports;      show=($role -eq 'admin') }
+        @{ href='/admin/reports';       key='reports';      label='Reports';       icon=$script:PSCIcons.reports;      show=$true }
         @{ href='/admin/veeam';         key='veeam';        label='Veeam';         icon=$script:PSCIcons.veeam;        show=(($role -eq 'admin') -and (Test-VeeamConfigured)) }
         @{ href='/admin/config';        key='config';       label='Config';        icon=$script:PSCIcons.config;       show=($role -eq 'admin') }
         @{ href='/?view=audit';         key='audit';        label='Audit';         icon=$script:PSCIcons.audit;        show=($role -eq 'admin') }
@@ -121,7 +121,7 @@ function Get-AppChrome {
 
     $brandInner = if ($HasLogo) { "<img src='/logo' alt='PSConsole' style='max-height:50px;max-width:196px'>" } else { "$($script:PSCIcons.brand)<span>PSConsole</span>" }
     $sub  = if ($Subtitle) { "<span class='sub'>$Subtitle</span>" } else { '' }
-    $userChip = "<span class='chip'>$([string]$User.username) &middot; $role</span>"
+    $userChip = "<span class='chip'>$(ConvertTo-PSCEncoded ([string]$User.username)) &middot; $(ConvertTo-PSCEncoded $role)</span>"
 
     $fouc   = "(function(){try{var t=localStorage.getItem('psc-theme')||'light';document.documentElement.setAttribute('data-theme',t);}catch(e){}})();"
     $toggle = "function pscToggleTheme(){var h=document.documentElement;var c=(h.getAttribute('data-theme')==='dark')?'light':'dark';h.setAttribute('data-theme',c);try{localStorage.setItem('psc-theme',c);}catch(e){}pscThemeLabel();}function pscThemeLabel(){var s=document.getElementById('themeLbl');if(!s)return;s.textContent=(document.documentElement.getAttribute('data-theme')==='dark')?'Light':'Dark';}pscThemeLabel();"

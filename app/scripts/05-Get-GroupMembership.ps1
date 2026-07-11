@@ -11,7 +11,12 @@ param(
 $rootDse = [ADSI]"LDAP://RootDSE"
 $domainDN = $rootDse.defaultNamingContext.Value
 $ds = New-Object System.DirectoryServices.DirectorySearcher([ADSI]"LDAP://$domainDN")
-$ds.Filter = "(&(objectCategory=group)(sAMAccountName=$GroupName))"
+# Escape the operator-supplied group name for the LDAP filter (RFC 4515). .Replace() is a literal
+# (non-regex) replace; $bs is a STRING (not char) so the Replace(string,string) overload is used, and
+# the backslash is escaped first so the escapes we add aren't re-escaped.
+$bs = [string][char]92
+$g = $GroupName.Replace($bs, $bs + '5c').Replace('(', $bs + '28').Replace(')', $bs + '29').Replace('*', $bs + '2a')
+$ds.Filter = "(&(objectCategory=group)(sAMAccountName=$g))"
 [void]$ds.PropertiesToLoad.Add('distinguishedName')
 $grp = $ds.FindOne()
 if (-not $grp) { Write-Error "Group '$GroupName' not found."; return }

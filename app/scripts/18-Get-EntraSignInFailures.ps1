@@ -39,7 +39,7 @@ function Invoke-Graph { param([string]$Uri,[switch]$Beta)
 # Invoke-Graph auto-pages, so the whole window is covered.
 $since = (Get-Date).ToUniversalTime().AddHours(-$Hours).ToString('yyyy-MM-ddTHH:mm:ssZ')
 $filter = "createdDateTime ge $since"
-if ($UserPrincipalName) { $filter += " and userPrincipalName eq '$UserPrincipalName'" }
+if ($UserPrincipalName) { $filter += " and userPrincipalName eq '$($UserPrincipalName -replace "'", "''")'" }
 Invoke-Graph ("/auditLogs/signIns?`$filter=$filter") |
 Where-Object { $_.status.errorCode -ne 0 } |
 ForEach-Object {

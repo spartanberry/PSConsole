@@ -5,11 +5,11 @@ $($data.open)
   <h3>LDAP / Directory auth</h3>
   <form method="post" action="/admin/config">
     <label style="display:inline-flex;align-items:center;gap:8px"><input type="checkbox" name="ldapEnabled" value="true" $(if($data.cfg.ldapEnabled){'checked'}) style="width:auto"> Enable LDAP authentication</label>
-    <label>LDAP server (domain FQDN)</label><input name="ldapServer" value="$($data.cfg.ldapServer)" style="width:100%">
-    <label>Port</label><input name="ldapPort" value="$($data.cfg.ldapPort)" style="width:100%">
+    <label>LDAP server (domain FQDN)</label><input name="ldapServer" value="$(ConvertTo-PSCEncoded ([string]$data.cfg.ldapServer))" style="width:100%">
+    <label>Port</label><input name="ldapPort" value="$(ConvertTo-PSCEncoded ([string]$data.cfg.ldapPort))" style="width:100%">
     <label style="display:inline-flex;align-items:center;gap:8px"><input type="checkbox" name="ldapUseSsl" value="true" $(if($data.cfg.ldapUseSsl){'checked'}) style="width:auto"> Use LDAPS (SSL)</label>
-    <label>Admin role - AD group CNs (comma separated)</label><input name="adminGroups" value="$($data.cfg.roleMap.admin -join ', ')" style="width:100%">
-    <label>HelpDesk role - AD group CNs (comma separated)</label><input name="helpdeskGroups" value="$($data.cfg.roleMap.helpdesk -join ', ')" style="width:100%">
+    <label>Admin role - AD group CNs (comma separated)</label><input name="adminGroups" value="$(ConvertTo-PSCEncoded ($data.cfg.roleMap.admin -join ', '))" style="width:100%">
+    <label>HelpDesk role - AD group CNs (comma separated)</label><input name="helpdeskGroups" value="$(ConvertTo-PSCEncoded ($data.cfg.roleMap.helpdesk -join ', '))" style="width:100%">
     <p class="note">Admin groups get full config + upload + run + provisioning. HelpDesk groups get run + decommission. All script execution uses the service account's read-only rights.</p>
     <button type="submit">Save</button>
   </form>

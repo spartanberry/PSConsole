@@ -193,3 +193,38 @@ function Get-VeeamJobReportRows {
         [PSCustomObject][ordered]@{ 'Run (ended)' = $en; Result = [string]$_.Result; Duration = [string]$_.Duration }
     })
 }
+
+# Scan recent Veeam sessions and email an alert for every NEW Failed/Warning session. Deduped via
+# data\veeam-alerts.json (key = "Job|EndTime") so a given run alerts exactly once across polls. One
+# email per invocation summarizes all new sessions. Best-effort; safe to run on a schedule. Requires
+# the Veeam add-on configured AND smtp configured (Send-VeeamAlertNotification is a no-op otherwise).
+# Returns @{ ok; new }.
+function Send-VeeamJobAlerts {
+    param([int]$Days = 3)
+    if (-not (Test-VeeamConfigured)) { return @{ ok=$false; note='veeam not configured' } }
+    $res = Get-VeeamSessions -Days $Days
+    $sessions = @($res.sessions | Where-Object { $_ -and (("$($_.Result)" -eq 'Failed') -or ("$($_.Result)" -eq 'Warning')) })
+
+    $statePath = Join-Path (Get-DataDir) 'veeam-alerts.json'
+    $seen = @{}
+    if (Test-Path $statePath) {
+        try { @((Get-Content $statePath -Raw | ConvertFrom-Json).alerted) | Where-Object { $_ } | ForEach-Object { $seen["$_"] = $true } } catch {}
+    }
+    $new = @()
+    foreach ($s in $sessions) {
+        $key = "$($s.Job)|$($s.End)"
+        if (-not $seen.ContainsKey($key)) { $new += $s; $seen[$key] = $true }
+    }
+    if ($new.Count) {
+        Send-VeeamAlertNotification -Sessions $new | Out-Null
+        # persist + prune keys whose session ended more than 30 days ago (parse End back from "Job|EndISO")
+        $cut = (Get-Date).AddDays(-30)
+        $keep = @($seen.Keys | Where-Object {
+            $parts = "$_" -split '\|', 2
+            $d = [datetime]::MinValue
+            if ($parts.Count -eq 2 -and [datetime]::TryParse($parts[1], [ref]$d)) { $d -gt $cut } else { $true }
+        })
+        try { (@{ alerted = @($keep); updated = (Get-Date).ToString('o') } | ConvertTo-Json -Depth 4) | Set-Content -Path $statePath -Encoding UTF8 } catch {}
+    }
+    @{ ok=$true; new=$new.Count }
+}
