@@ -246,13 +246,15 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
         }
         if (-not $b.opUser -or -not $b.opPassword) { Write-PodeJsonResponse -Value @{ ok=$false; errors=@('Your AD username and password are required to create the account.') }; return }
         if (-not $b.newPassword) { Write-PodeJsonResponse -Value @{ ok=$false; errors=@('An initial password for the new user is required.') }; return }
+        # Default ON when the field is absent (older clients / safety); uncheck for service/shared accounts.
+        $mustChange = if ($null -ne $b.mustChangePassword) { ("$($b.mustChangePassword)" -match '^(true|on|1)$') } else { $true }
         $sw = [Diagnostics.Stopwatch]::StartNew()
-        $res = New-OnPremUser -Plan $plan -Password $b.newPassword -OperatorUser $b.opUser -OperatorPassword $b.opPassword
+        $res = New-OnPremUser -Plan $plan -Password $b.newPassword -OperatorUser $b.opUser -OperatorPassword $b.opPassword -MustChangePassword:$mustChange
         $sw.Stop()
         # Audit params deliberately EXCLUDE opPassword/newPassword.
         $status = if ($res.ok) { 'success' } else { 'error' }
         $detail = if ($res.ok) { $res.dn } else { $res.error }
-        Write-Audit $u.username $u.role 'create-user' $plan.userPrincipalName @{ ou=$plan.ou; dept=$plan.department; by=$b.opUser } $status $sw.ElapsedMilliseconds $detail
+        Write-Audit $u.username $u.role 'create-user' $plan.userPrincipalName @{ ou=$plan.ou; dept=$plan.department; by=$b.opUser; mustChangePwd=$mustChange } $status $sw.ElapsedMilliseconds $detail
         if ($res.ok) {
             Add-OnboardingPending -Plan $plan -Operator $u.username -Dn $res.dn
             try { Send-UserCreatedNotification -Plan $plan -Operator $u.username -Dn $res.dn | Out-Null } catch {}
@@ -617,6 +619,7 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
                 "</div>" +
                 "<div style='display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px'>" +
                     "<button class='secondary' onclick='veeamCsv()'>Export CSV</button>" +
+                    $(if (Test-SharePointConfigured) { "<button class='secondary' onclick=`"location.href='/admin/veeam/remediation'`">Remediation</button>" } else { '' }) +
                     "<span style='margin-left:auto;display:flex;gap:8px;align-items:center'>" +
                         "<input id='veeamMailTo' placeholder='email address' style='width:210px'>" +
                         "<button class='secondary' onclick='veeamEmail()'>Email</button> <span id='veeamMailStatus' style='font-size:12px'></span>" +
@@ -629,6 +632,50 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
         Write-PodeViewResponse -Path 'veeam' -Data @{ user=$u; configured=$configured; days=$days; job=$job; err=$err; controlsHtml=$controlsHtml; bodyHtml=$bodyHtml; rowsJson=$rowsJson; reportTitle=$reportTitle; head=$chrome.head; open=$chrome.open; close=$chrome.close }
     }
 
+    # ---- Veeam -> SharePoint remediation tracking (admin, optional add-on) ----
+    Add-PodeRoute -Method Get -Path '/admin/veeam/remediation' -ScriptBlock {
+        if (-not (Require 'admin' 'veeam-reports' $WebEvent)) { return }
+        $u = $WebEvent.Session.Data.user
+        $configured = [bool](Test-SharePointConfigured)
+        $err = ''; $rows = @()
+        if ($configured) { try { $rows = @(Get-SPRemediationRows) } catch { $err = "$($_.Exception.Message)" } }
+        $pill = { param($res) switch ("$res") { 'Success' { '<span class="pill s-complete">Success</span>' } 'Warning' { '<span class="pill s-manual-needed">Warning</span>' } 'Failed' { '<span class="pill s-partial">Failed</span>' } default { "<span class='pill s-pending-sync'>$(ConvertTo-PSCEncoded ([string]$res))</span>" } } }
+        $statusOpts = @('N/A','Open','Investigating','Remediated','Ignored')
+        $bodyRows = if (@($rows).Count) { (@($rows) | ForEach-Object {
+            $r = $_
+            $sel = (@($statusOpts) | ForEach-Object { "<option$(if ($_ -eq $r.RemStatus) { ' selected' } else { '' })>$_</option>" }) -join ''
+            $meta = "by $(ConvertTo-PSCEncoded ([string]$r.RemediatedBy)) $(ConvertTo-PSCEncoded ([string]$r.RemediatedAt))"
+            "<tr data-id='$(ConvertTo-PSCEncoded ([string]$r.ItemId))'>" +
+            "<td>$(ConvertTo-PSCEncoded ([string]$r.Job))</td>" +
+            "<td>$(ConvertTo-PSCEncoded ([string]$r.BackupDate))</td>" +
+            "<td>$(& $pill $r.VeeamResult)<div class='note'>S$($r.Success)/W$($r.Warning)/F$($r.Failed)</div></td>" +
+            "<td><select class='remStatus'>$sel</select></td>" +
+            "<td><textarea class='remNote' rows='2' style='width:100%;min-width:220px' placeholder='what fixed it'>$(ConvertTo-PSCEncoded ([string]$r.FixNote))</textarea><div class='note remMeta'>$meta</div></td>" +
+            "<td><button class='secondary' onclick='remSave(this)'>Save</button></td></tr>"
+        }) -join '' } else { "<tr><td colspan='6' class='note'>$(if ($configured) { 'No open items - successful backups need no remediation. Click <b>Sync now</b> to refresh from Veeam.' } else { 'Configure the add-on to begin.' })</td></tr>" }
+        $chrome = Get-AppChrome -Active 'veeam' -User $u -Title 'Veeam remediation' -Subtitle 'Track and resolve backup failures via SharePoint' -HasLogo ([bool]((Get-Store config).logoFile))
+        Write-PodeViewResponse -Path 'veeam-remediation' -Data @{ user=$u; configured=$configured; err=$err; bodyRows=$bodyRows; head=$chrome.head; open=$chrome.open; close=$chrome.close }
+    }
+    Add-PodeRoute -Method Post -Path '/admin/veeam/remediation/save' -ScriptBlock {
+        if (-not (Require 'admin' 'veeam-reports' $WebEvent)) { return }
+        $u = $WebEvent.Session.Data.user; $b = $WebEvent.Data
+        $id = [string]$b.itemId
+        if (-not $id) { Write-PodeJsonResponse -Value @{ ok=$false; error='Missing item id.' }; return }
+        $res = Set-SPRemediation -ItemId $id -Status ([string]$b.status) -Note ([string]$b.note) -By $u.username
+        $when = (Get-Date).ToString('yyyy-MM-dd HH:mm')
+        Write-Audit $u.username $u.role 'veeam-remediation' $id @{ status=[string]$b.status } ($(if ($res.ok) { 'success' } else { 'error' })) 0 ([string]$res.error)
+        Write-PodeJsonResponse -Value @{ ok=$res.ok; error=$res.error; by=$u.username; at=$when }
+    }
+    Add-PodeRoute -Method Post -Path '/admin/veeam/remediation/sync' -ScriptBlock {
+        if (-not (Require 'admin' 'veeam-reports' $WebEvent)) { return }
+        $u = $WebEvent.Session.Data.user
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        $res = Sync-VeeamToSharePoint -Days 7
+        $sw.Stop()
+        Write-Audit $u.username $u.role 'veeam-sp-sync' 'sharepoint' @{ created=$res.created; updated=$res.updated } ($(if ($res.ok) { 'success' } else { 'error' })) $sw.ElapsedMilliseconds ([string]$res.error)
+        Write-PodeJsonResponse -Value $res
+    }
+
     # Scheduled-report dispatcher: fires every 15 min, sends any report whose time has passed for its
     # current occurrence (see Reports.ps1 Test-ReportDue). No-op when there are no due schedules.
     Add-PodeSchedule -Name 'scheduled-reports' -Cron '*/15 * * * *' -ScriptBlock {
@@ -639,6 +686,12 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
     # settings (default off). Idempotent, so re-runs are harmless. Manual "Run now" always works.
     Add-PodeSchedule -Name 'cloud-onboarding' -Cron '*/5 * * * *' -ScriptBlock {
         try { if ((Get-ProvisionSettings).onboardingAutoRun) { Invoke-Onboarding | Out-Null } } catch {}
+    }
+
+    # Daily Veeam -> SharePoint status sync at 08:00. No-op unless the SharePoint add-on is configured;
+    # writes only the synced columns, so it never disturbs remediation notes. Manual "Sync now" also works.
+    Add-PodeSchedule -Name 'veeam-sharepoint-sync' -Cron '0 8 * * *' -ScriptBlock {
+        try { if (Test-SharePointConfigured) { Sync-VeeamToSharePoint -Days 8 | Out-Null } } catch {}
     }
 }
 

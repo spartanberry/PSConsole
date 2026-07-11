@@ -36,8 +36,12 @@ $(if(-not $data.departments -or $data.departments.Count -eq 0){'<div class="aler
     <div class="grid2">
       <div><label>Your AD username</label><input id="opUser" placeholder="DOMAIN\you or you@domain" autocomplete="off"></div>
       <div><label>Your AD password</label><input id="opPassword" type="password" autocomplete="off"></div>
-      <div style="grid-column:1/3"><label>Initial password for the new user (they must change at first logon)</label><input id="newPassword" type="password" autocomplete="off"></div>
+      <div style="grid-column:1/3"><label>Initial password for the new user</label><input id="newPassword" type="password" autocomplete="off"></div>
     </div>
+    <label style="display:inline-flex;align-items:center;gap:8px;font-weight:normal;margin:4px 0 12px">
+      <input type="checkbox" id="mustChangePwd" checked style="width:auto"><b>Require password change at first logon</b>
+      <span class="note">- on by default; uncheck for service or shared accounts that shouldn't be prompted</span>
+    </label>
     <button onclick="create()">Create user</button>
   </div>
 
@@ -85,6 +89,7 @@ async function preview(){
 }
 async function create(){
   const g=gather();g.opUser=val('opUser');g.opPassword=val('opPassword');g.newPassword=val('newPassword');
+  var mc=document.getElementById('mustChangePwd');g.mustChangePassword=(mc&&mc.checked)?'true':'false';
   const r=await fetch('/users/new/create',{method:'POST',body:fd(g)});const j=await r.json();
   const rc=document.getElementById('resultCard');rc.style.display='block';
   let h='';

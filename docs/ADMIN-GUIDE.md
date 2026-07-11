@@ -339,6 +339,91 @@ everything. A script that omits these tags defaults to category *Other* and role
 
 ---
 
+## 8d. Veeam remediation tracking (SharePoint, admin add-on)
+
+**What it does.** PSConsole keeps a **daily backup-status history** in a SharePoint list - **one row per Veeam
+job per day** (the backup job and its Wasabi copy are separate rows). A one-time backfill seeds ~3 years of
+history (all `Success`); the daily 08:00 sync then writes the recent window from **real** Veeam data. A day
+that actually **Failed** is flagged `RemStatus=Open`; `Warning` and `Success` are `N/A` (informational, no
+action). The **Veeam &rsaquo; Remediation** page lists only the open failures so an admin can flip one to
+**Remediated** and record the fix - the sync never overwrites `RemStatus`/`FixNote`. Weekend results carry a
+`ReviewDue` of the next business day (Fri/Sat/Sun -> Monday). Optional add-on: hidden until configured
+(`data\sharepoint.config.json`), read/written app-only via the existing **PSConsole-Graph-Write** app.
+
+Setup is one-time. You do **not** hand-build columns - the app creates the list and all columns.
+
+1. **Add the permission (least privilege).** In Entra, add the **application** permission **`Sites.Selected`**
+   to `PSConsole-Graph-Write` and grant admin consent. `Sites.Selected` lets the app touch *only* sites it is
+   explicitly granted - not all of SharePoint.
+
+2. **Create an (empty) site/team site** to hold the list if you don't have one, e.g. `/sites/ITOps`.
+
+3. **Grant the app access to that one site.** If you have PnP.PowerShell, `Grant-PnPAzureADAppSitePermission`
+   works; if not, use the **Microsoft Graph PowerShell SDK** as a SharePoint/Global admin (this is the tested
+   path):
+   ```powershell
+   Install-Module Microsoft.Graph.Sites -Scope CurrentUser -Force
+   Connect-MgGraph -Scopes "Sites.FullControl.All"          # add -UseDeviceCode if WAM keeps picking the wrong account
+   $site = Get-MgSite -SiteId "contoso.sharepoint.com:/sites/ITOps"   # NOTE: no trailing slash
+   $params = @{ roles=@("manage"); grantedToIdentities=@(@{ application=@{ id="<graph-write-clientId>"; displayName="PSConsole-Graph-Write" } }) }
+   New-MgSitePermission -SiteId $site.Id -BodyParameter $params
+   ```
+   Creating a list/columns is a **schema change that needs `manage`** (plain `write` returns 403). Grant
+   `manage` for provisioning, then dial back to `write` (the daily item sync only needs `write`) with
+   `Update-MgSitePermission -SiteId $site.Id -PermissionId <id> -Roles @("write")` (find `<id>` via
+   `Get-MgSitePermission`).
+
+4. **Configure PSConsole, create the list, backfill history:**
+   ```powershell
+   cd graph-setup
+   .\Set-SharePointConfig.ps1 -SiteHostname contoso.sharepoint.com -SitePath /sites/ITOps -ListName "Backup Status Report"
+   .\New-VeeamSharePointList.ps1     # creates/updates the list + all columns (idempotent; adds only missing columns)
+   Restart-Service PSConsole
+   ```
+   Then populate history from a PowerShell session on the server:
+   ```powershell
+   Import-Module .\app\lib\PSConsoleLib.psm1 -Force ; $env:PSCONSOLE_DATA="$PWD\data"
+   Initialize-VeeamHistory -Years 3 -WhatIf     # preview row count (~= jobs x 1095)
+   Initialize-VeeamHistory -Years 3             # one-time backfill (batched; several minutes)
+   Sync-VeeamToSharePoint -Days 8               # overwrite the recent window with real results
+   ```
+
+5. **Index the list + build the year views (in the SharePoint UI, one time).** With thousands of rows, filters
+   must run on indexed columns. In **List settings &rsaquo; Indexed columns**, add an index on **`BackupDate`**
+   and **`RemStatus`**. Then create a filtered **view per year** (e.g. `BackupYear` is equal to `2025`) for the
+   per-year tabs; the default view + the column header **date filter** cover ad-hoc ranges, and **Export to
+   CSV/Excel** exports the current view. (A single full-year view is ~5,100 rows, right at SharePoint's 5,000
+   view limit - if a year tab shows a threshold error, split it in half by date or filter to a narrower range.)
+
+6. **Color the status labels (optional, in the SharePoint UI).** On the **VeeamResult** column: header dropdown
+   &rsaquo; **Column settings &rsaquo; Format this column &rsaquo; Advanced mode**, and paste:
+   ```json
+   { "$schema": "https://developer.microsoft.com/json-schemas/sp/v2/column-formatting.schema.json",
+     "elmType": "div", "txtContent": "@currentField",
+     "style": { "border-radius": "10px", "padding": "2px 10px", "font-weight": "600",
+       "background-color": "=if(@currentField=='Success','#dff6dd',if(@currentField=='Warning','#fff4ce',if(@currentField=='Failed','#fde7e9','')))",
+       "color": "=if(@currentField=='Failed','#a4262c',if(@currentField=='Warning','#8a6d00','#0b6a0b'))" } }
+   ```
+   (Repeat on **RemStatus** if you want the remediation status colored too.) The PSConsole Remediation page is
+   already color-coded automatically.
+
+The columns the app creates (reference / internal names): each row = one job (`Title`) on one day (`BackupDate`).
+
+| Column | Type | Written by |
+|---|---|---|
+| `Title` (built-in) - the job name | default | sync/backfill |
+| `BackupDate` | Date (indexed) | sync/backfill |
+| `BackupYear` | Number (for the year views) | sync/backfill |
+| `VeeamResult` | Choice: Success, Warning, Failed | sync/backfill |
+| `SuccessCount`, `WarningCount`, `FailedCount` | Number | sync |
+| `ReviewDue` | Date (next business day) | sync/backfill |
+| `RemStatus` | Choice: N/A, Open, Investigating, Remediated, Ignored (indexed) | people / editor |
+| `FixNote` | Multiple lines of text | people / editor |
+| `RemediatedBy`, `RemediatedAt` | Single line of text | editor |
+| `LastSynced` | Single line of text | sync |
+
+---
+
 ## 9. Troubleshooting
 
 - **Login 500:** check `data\ldap-debug.log`. Directory-auth failures are now caught and logged

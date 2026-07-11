@@ -2,6 +2,37 @@
 
 All notable changes to PSConsole. Versions follow the `VERSION` file.
 
+## [1.9.0] - 2026-07-10
+
+### Added
+- **Veeam backup history in SharePoint (admin add-on, greatly expanded).** The SharePoint list is now a
+  **daily backup-status history** — one row per Veeam job per day (the backup job and its Wasabi copy are
+  separate rows) — instead of a single living status board. A one-time backfill seeds ~3 years of history and
+  the daily 08:00 sync writes the recent window from real Veeam data.
+  - `Initialize-VeeamHistory -Years <n> [-WhatIf]` — one-time, idempotent backfill (batched via Graph `$batch`
+    with throttling/5xx retry). `-WhatIf` previews the row count first.
+  - `Sync-VeeamToSharePoint` rewritten to upsert one row per job **per day** over the recent window; a day that
+    actually **Failed** is flagged `RemStatus=Open`, while `Warning`/`Success` are `N/A` (informational only).
+    It never overwrites a human's `RemStatus`/`FixNote`.
+  - New columns: `BackupDate`, `BackupYear` (for per-year views), `ReviewDue` (**next business day** — weekend
+    backups roll to Monday so they aren't flagged until they're actually reviewed). `RemStatus` gains an **N/A**
+    choice so first-try successes don't show as open work.
+  - The **Remediation** page now lists only **actionable** rows (Open/Investigating) with a **Date** column and
+    color-coded result pills, so it stays fast against a multi-thousand-row list.
+- **Automated list/column provisioning fixup.** `New-VeeamSharePointList.ps1` / `New-SPVeeamList` now reconcile
+  an existing list — adding only missing columns and patching `RemStatus` choices — so you can point PSConsole
+  at a list you already created.
+
+### Changed
+- **App logo in the sidebar is larger** (max height 38px → 50px).
+- `Invoke-GraphWrite` gained an optional `-Headers` parameter; SharePoint reads send the non-indexed-query
+  tolerance header so filters work before the columns are indexed.
+
+### Notes
+- One-time SharePoint setup (see ADMIN-GUIDE §8d): grant the graph-write app **`Sites.Selected`** + a site
+  permission (Manage while provisioning, then Write); index `BackupDate` + `RemStatus`; optionally add per-year
+  view tabs and paste the provided column-format JSON to color the status labels.
+
 ## [1.8.0] - 2026-07-10
 
 ### Added
@@ -15,6 +46,9 @@ All notable changes to PSConsole. Versions follow the `VERSION` file.
   configured: the Run/Reports catalog now has a **Veeam** group with a `Test-VeeamConfigured` gate (mirrors Intune).
 - **`graph-setup\Set-VeeamTrust.ps1`** — one-time helper that makes the Veeam query account trust the backup
   server's self-signed Identity-service certificate (see Fixed, below).
+- **Optional "require password change at first logon".** The Create User form now has a checkbox (checked by
+  default) controlling whether the new account must change its password at first logon — uncheck it for
+  service or shared accounts. Previously this was always forced with no way to turn it off.
 
 ### Changed
 - **Veeam add-on no longer needs CredSSP.** The query connects to the Veeam server's own (localhost) services,

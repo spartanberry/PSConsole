@@ -119,7 +119,7 @@ function Get-AppChrome {
         "<a class='$cls' href='$($_.href)'>$($_.icon)<span>$($_.label)</span></a>"
     }) -join ''
 
-    $brandInner = if ($HasLogo) { "<img src='/logo' alt='PSConsole' style='max-height:38px;max-width:186px'>" } else { "$($script:PSCIcons.brand)<span>PSConsole</span>" }
+    $brandInner = if ($HasLogo) { "<img src='/logo' alt='PSConsole' style='max-height:50px;max-width:196px'>" } else { "$($script:PSCIcons.brand)<span>PSConsole</span>" }
     $sub  = if ($Subtitle) { "<span class='sub'>$Subtitle</span>" } else { '' }
     $userChip = "<span class='chip'>$([string]$User.username) &middot; $role</span>"
 
