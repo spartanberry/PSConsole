@@ -1,0 +1,105 @@
+$($data.head)
+$($data.open)
+
+$(if(-not $data.intuneOn){'<div class="alert warn">Intune add-on is off - the "Look up in Intune" autofill is unavailable.</div>'})
+
+<div class="card">
+  <a class="note" href="/inventory">&lsaquo; Back to inventory</a>
+  <h3 style="margin:6px 0 2px">Add computer</h3>
+
+  <div class="grid2">
+    <div>
+      <label>Computer name</label>
+      <div style="display:flex;gap:8px"><input id="title" placeholder="e.g. LAPTOP500" style="flex:1">$(if($data.intuneOn){'<button class="secondary" type="button" onclick="lookup()">Look up in Intune</button>'})</div>
+      <span class="note" id="lkmsg"></span>
+    </div>
+    <div></div>
+    <div><label>Brand</label><input id="brand"></div>
+    <div><label>Model</label><input id="model"></div>
+    <div><label>Serial</label><input id="serial"></div>
+    <div><label>OS</label><input id="os"></div>
+    <div><label>Deployment status</label><select id="deploymentStatus"><option value="">--</option>$(foreach($o in @($data.deployChoices)){"<option>$(ConvertTo-PSCEncoded $o)</option>"})</select></div>
+    <div><label>Computer status</label><select id="computerStatus"><option value="">--</option>$(foreach($o in @($data.computerChoices)){"<option>$(ConvertTo-PSCEncoded $o)</option>"})</select></div>
+    <div><label>Intune status</label><select id="intuneStatus"><option value="">--</option>$(foreach($o in @($data.intuneChoices)){"<option>$(ConvertTo-PSCEncoded $o)</option>"})</select></div>
+    <div><label>Purchase date</label><input id="purchaseDate" placeholder="YYYY-MM-DD"></div>
+    <div><label>Purchase price</label><input id="purchasePrice" placeholder="1200"></div>
+    <div><label>Warranty expires</label><input id="warranty" placeholder="YYYY-MM-DD"></div>
+  </div>
+  <label>Comment</label><input id="comment">
+  <div style="margin-top:12px;display:flex;gap:10px;align-items:center"><button onclick="addOne()">Add computer</button><span id="msg" class="note"></span></div>
+</div>
+
+<div class="card">
+  <h3>Bulk add (CSV)</h3>
+  <p class="note">Download the template, fill one row per computer, then upload. Headers must match the template; a computer name that already exists is skipped.</p>
+  <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+    <a class="btn secondary" href="/inventory/add/template">Download template CSV</a>
+    <input type="file" id="csv" accept=".csv">
+    <button onclick="uploadCsv()">Upload &amp; add</button>
+    <span id="bmsg" class="note"></span>
+  </div>
+  <div id="bout" style="margin-top:12px"></div>
+</div>
+
+<script>
+function val(id){return document.getElementById(id).value;}
+function setv(id,v){var e=document.getElementById(id);if(e)e.value=(v==null?'':v);}
+function esc(s){return (s==null?'':String(s)).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function fd(o){const f=new FormData();for(const k in o)f.append(k,o[k]);return f;}
+function gather(){return {title:val('title'),brand:val('brand'),model:val('model'),serial:val('serial'),os:val('os'),deploymentStatus:val('deploymentStatus'),computerStatus:val('computerStatus'),intuneStatus:val('intuneStatus'),purchaseDate:val('purchaseDate'),purchasePrice:val('purchasePrice'),warranty:val('warranty'),comment:val('comment')};}
+
+async function lookup(){
+  const t=val('title').trim();if(!t){alert('Enter a computer name first.');return;}
+  const m=document.getElementById('lkmsg');m.textContent='looking up...';
+  try{const r=await fetch('/inventory/lookup?device='+encodeURIComponent(t));const j=await r.json();
+    if(j.found){setv('serial',j.serial);setv('model',j.model);setv('brand',j.brand);setv('os',j.os);setv('intuneStatus','Intune');m.innerHTML='<span class="ok">Found in Intune - autofilled.</span>';}
+    else{m.innerHTML='<span class="note">Not in Intune - enter details manually.</span>';}
+  }catch(e){m.textContent='lookup failed: '+e;}
+}
+async function addOne(){
+  const g=gather();if(!g.title.trim()){alert('Enter a computer name.');return;}
+  const m=document.getElementById('msg');m.textContent='adding...';
+  try{const r=await fetch('/inventory/add/single',{method:'POST',body:fd(g)});const j=await r.json();
+    if(j.ok){m.innerHTML='<span class="ok">Added '+esc(g.title)+'.</span>';['title','brand','model','serial','os','purchaseDate','purchasePrice','warranty','comment'].forEach(id=>setv(id,''));}
+    else{m.innerHTML='<span class="err">Failed: '+esc(j.error||'unknown')+'</span>';}
+  }catch(e){m.textContent='failed: '+e;}
+}
+
+function splitCsvLine(line){
+  const out=[];let cur='';let q=false;
+  for(let i=0;i<line.length;i++){const c=line[i];
+    if(q){if(c=='"'){if(line[i+1]=='"'){cur+='"';i++;}else q=false;}else cur+=c;}
+    else{if(c=='"')q=true;else if(c==','){out.push(cur);cur='';}else cur+=c;}
+  }
+  out.push(cur);return out;
+}
+function parseCsv(text){
+  const lines=text.replace(/\r/g,'').split('\n').filter(l=>l.trim().length);
+  if(lines.length<2)return [];
+  const heads=splitCsvLine(lines[0]).map(h=>h.trim());
+  const map={ComputerName:'title',Brand:'brand',Model:'model',Serial:'serial',OS:'os',DeploymentStatus:'deploymentStatus',ComputerStatus:'computerStatus',IntuneStatus:'intuneStatus',PurchaseDate:'purchaseDate',PurchasePrice:'purchasePrice',Warranty:'warranty',Comment:'comment'};
+  const rows=[];
+  for(let i=1;i<lines.length;i++){
+    const cells=splitCsvLine(lines[i]);const o={};
+    heads.forEach((h,idx)=>{o[map[h]||h]=(cells[idx]||'').trim();});
+    if(o.title)rows.push(o);
+  }
+  return rows;
+}
+async function uploadCsv(){
+  const fi=document.getElementById('csv').files[0];if(!fi){alert('Choose a CSV file.');return;}
+  const b=document.getElementById('bmsg');b.textContent='reading...';
+  const text=await fi.text();const rows=parseCsv(text);
+  if(!rows.length){b.textContent='no data rows found in the CSV.';return;}
+  b.textContent='adding '+rows.length+' computer(s)...';
+  const payload=btoa(unescape(encodeURIComponent(JSON.stringify(rows))));
+  try{const r=await fetch('/inventory/add/bulk',{method:'POST',body:fd({rows:payload})});const j=await r.json();
+    b.textContent='added '+j.added+' of '+j.total+'.';
+    let h='<table><tr><th>Computer</th><th>Result</th></tr>';
+    h+=(j.results||[]).map(x=>'<tr><td>'+esc(x.title)+'</td><td class="'+(x.ok?'ok':'err')+'">'+(x.ok?'added':'skipped - '+esc(x.error||''))+'</td></tr>').join('');
+    h+='</table>';document.getElementById('bout').innerHTML=h;
+  }catch(e){b.textContent='upload failed: '+e;}
+}
+</script>
+
+$($data.close)

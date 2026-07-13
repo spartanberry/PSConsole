@@ -1,5 +1,6 @@
 <#
 .SYNOPSIS  Intune managed devices that haven't checked in for N days (default 30) - retirement/cleanup candidates.
+.RUNEXAMPLE  Days=30
 .CATEGORY  Intune
 .NOTES     Graph app perms: DeviceManagementManagedDevices.Read.All. Read-only. (Intune last-sync, not Entra sign-in.)
 .ROLE      HelpDesk

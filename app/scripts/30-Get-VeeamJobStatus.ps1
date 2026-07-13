@@ -1,5 +1,6 @@
 <#
 .SYNOPSIS
+.RUNEXAMPLE  Days=7
     Veeam backup status - last result per job plus success/warning/failure counts over the window.
 
 .DESCRIPTION

@@ -2,6 +2,37 @@
 
 All notable changes to PSConsole. Versions follow the `VERSION` file.
 
+## [1.13.0] - 2026-07-12
+
+### Added
+- **Computer inventory (SharePoint, admin add-on).** A new **Inventory** page browses and searches the
+  `Computer_Inventory` list (by computer name, owner, or serial), with three actions:
+  - **Computer swap** — reassign a device to a user: updates inventory owner + status on both the new and old
+    machine **and** sets the new device's **Intune primary user** in one step, with a confirmation email. The
+    old machine is marked returned (Deployment "Needs Image", Computer "Needs to be Imaged"), and Intune Status
+    is auto-set on both devices by real Intune membership.
+  - **Change status** — set a device's deployment / computer status (e.g. Needs Repair, Sold / Disposed).
+  - **Add computer** — single entry with a **"Look up in Intune"** autofill (serial / model / manufacturer /
+    OS), duplicate-name guard, plus **CSV bulk add** with a downloadable template.
+  Read and written **app-only** via the graph-write app (`Sites.Selected`); config in `data\inventory.config.json`.
+- **Inventory ↔ Intune reconciliation** Run script (`29-Compare-InventoryToIntune.ps1`, admin, Intune group) —
+  flags devices marked "Intune" in inventory that aren't actually enrolled (and the reverse), plus inventory
+  **Owner vs Intune primary-user** mismatches. Great for catching documentation drift.
+- **Per-script parameter examples on the Run page.** Each script now carries a `.RUNEXAMPLE` hint, so selecting a
+  script shows a **relevant** parameter example (e.g. `Days=14`, `DeviceName=LAPTOP192`, `(no parameters)`)
+  instead of one generic placeholder.
+
+### Changed
+- **Admin Guide:** added a reusable **"SharePoint site access (Sites.Selected)"** section shared by the Veeam and
+  Inventory add-ons (the one-time per-site grant + all the admin-role / Conditional-Access / scope-consent
+  troubleshooting), and documented the Inventory add-on setup. `HANDOFF.md` gained a matching maintainer section.
+
+### Fixed
+- **Intune device lookup** could falsely report "not found in Intune" because a single-element result unrolled to
+  a scalar (so a `.Count` check saw `$null`); the swap now finds and sets the primary user reliably.
+- **CSV bulk add** merged every row into one under Windows PowerShell 5.1 — its `ConvertFrom-Json` collapses an
+  array of uniform objects into a single columnar object. Bulk parsing now uses `JavaScriptSerializer`.
+
 ## [1.12.0] - 2026-07-11
 
 ### Added

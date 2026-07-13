@@ -1,0 +1,124 @@
+$($data.head)
+$($data.open)
+
+$(if(-not $data.configured){'<div class="alert warn"><b>Inventory not configured.</b> Set up data\inventory.config.json first.</div>'})
+$(if(-not $data.intuneOn){'<div class="alert warn">Intune add-on is off - a swap will still update inventory, but the device primary user cannot be set.</div>'})
+
+<div class="card">
+  <a class="note" href="/inventory">&lsaquo; Back to inventory</a>
+  <h3 style="margin:6px 0 2px">Computer swap</h3>
+  <p class="note">Assign a new computer to a user (updates inventory owner/status and the Intune primary user), and mark the old one as returned.</p>
+
+  <div class="grid2">
+    <div style="position:relative">
+      <label>User (assign to)</label>
+      <input id="userName" autocomplete="off" placeholder="Type a name, then pick...">
+      <input type="hidden" id="userId">
+      <div id="userDrop" class="drop"></div>
+      <span class="note" id="userHint"></span>
+    </div>
+    <div></div>
+    <div>
+      <label>New computer <span class="note">- being assigned</span></label>
+      <input id="newDevice" list="newList" autocomplete="off" placeholder="Computer name">
+      <datalist id="newList"></datalist>
+    </div>
+    <div>
+      <label>Old computer <span class="note">- being returned (optional)</span></label>
+      <input id="oldDevice" list="oldList" autocomplete="off" placeholder="Computer name">
+      <datalist id="oldList"></datalist>
+    </div>
+  </div>
+
+  <div style="margin-top:14px;display:flex;gap:10px;align-items:center">
+    <button class="secondary" onclick="preview()">Preview</button>
+    <button onclick="execute()">Apply swap</button>
+    <span id="msg" class="note"></span>
+  </div>
+
+  <div id="out" style="margin-top:14px"></div>
+</div>
+
+<style>
+.drop{position:absolute;z-index:20;left:0;right:0;background:var(--panel);border:1px solid var(--border);border-radius:7px;max-height:220px;overflow:auto;box-shadow:var(--shadow)}
+.drop:empty{display:none}
+.dropitem{padding:7px 10px;cursor:pointer}
+.dropitem:hover{background:var(--hover)}
+</style>
+
+<script>
+function val(id){return document.getElementById(id).value;}
+function esc(s){return (s==null?'':String(s)).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function fd(o){const f=new FormData();for(const k in o)f.append(k,o[k]);return f;}
+function gather(){return {userName:val('userName'),userId:val('userId'),oldDevice:val('oldDevice'),newDevice:val('newDevice')};}
+function arr(x){return Array.isArray(x)?x:(x?[x]:[]);}
+
+// user typeahead (custom - we need id + display name, not just the typed text)
+let ut;const un=document.getElementById('userName');
+un.addEventListener('input',function(){
+  document.getElementById('userId').value='';document.getElementById('userHint').textContent='';
+  clearTimeout(ut);const q=this.value.trim();const d=document.getElementById('userDrop');
+  if(q.length<2){d.innerHTML='';return;}
+  ut=setTimeout(async()=>{
+    try{
+      const r=await fetch('/inventory/users?q='+encodeURIComponent(q));const j=await r.json();
+      const items=arr(j.items);
+      d.innerHTML=items.map(u=>'<div class="dropitem" data-id="'+esc(u.id)+'" data-name="'+esc(u.name)+'">'+esc(u.name)+' <span class="note">'+esc(u.upn)+'</span></div>').join('');
+      Array.from(d.querySelectorAll('.dropitem')).forEach(el=>el.addEventListener('click',function(){
+        un.value=this.dataset.name;document.getElementById('userId').value=this.dataset.id;
+        document.getElementById('userHint').textContent='user selected';d.innerHTML='';
+      }));
+    }catch(e){}
+  },250);
+});
+document.addEventListener('click',function(e){if(e.target!==un && !e.target.closest('#userDrop')){document.getElementById('userDrop').innerHTML='';}});
+
+// device datalists (the value we need is just the computer name)
+function wireDevice(inputId,listId){
+  let t;document.getElementById(inputId).addEventListener('input',function(){
+    clearTimeout(t);const q=this.value.trim();if(q.length<1)return;
+    t=setTimeout(async()=>{
+      try{const r=await fetch('/inventory/devices?q='+encodeURIComponent(q));const j=await r.json();
+        document.getElementById(listId).innerHTML=arr(j.items).map(x=>'<option value="'+esc(x.title)+'">'+esc(x.owner||'')+'</option>').join('');
+      }catch(e){}
+    },250);
+  });
+}
+wireDevice('newDevice','newList');wireDevice('oldDevice','oldList');
+
+function warnHtml(w){w=arr(w);return w.length?('<div class="alert warn"><b>Heads-up:</b><ul style="margin:6px 0 0;padding-left:18px">'+w.map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul></div>'):'';}
+
+async function preview(){
+  const b=gather();const m=document.getElementById('msg');m.textContent='checking...';
+  try{
+    const r=await fetch('/inventory/swap/preview',{method:'POST',body:fd(b)});const j=await r.json();
+    m.textContent='';
+    let h=warnHtml(j.warnings);
+    h+='<table><tr><th>Device</th><th>Change</th></tr>';
+    h+='<tr><td><b>'+esc(j.newTitle||'(none)')+'</b>'+(j.newFound?'':' <span class="err">(not in inventory)</span>')+'</td><td>Owner &rarr; <b>'+esc(j.user||'')+'</b>; Deployment &rarr; Deployed; Intune &rarr; '+(j.intuneFound?'Intune; primary user will be set':'Not Managed <span class="note">(not in Intune)</span>')+'</td></tr>';
+    if(j.oldTitle){h+='<tr><td><b>'+esc(j.oldTitle)+'</b>'+(j.oldFound?'':' <span class="err">(not in inventory)</span>')+'</td><td>Owner &rarr; (cleared); Deployment &rarr; Needs Image; Computer &rarr; Needs to be Imaged; Intune &rarr; '+(j.oldIntuneFound?'Intune':'Not Managed')+'</td></tr>';}
+    h+='</table>';
+    document.getElementById('out').innerHTML=h;
+  }catch(e){m.textContent='preview failed: '+e;}
+}
+
+async function execute(){
+  const b=gather();const m=document.getElementById('msg');
+  if(!b.newDevice){alert('Enter the new computer.');return;}
+  if(!b.userId){alert('Pick the user from the dropdown so the Intune primary user can be set.');return;}
+  if(!confirm('Apply this swap?\n\nNew: '+b.newDevice+'  ->  '+b.userName+'\nOld: '+(b.oldDevice||'(none)')+'  ->  returned'))return;
+  m.textContent='applying...';
+  try{
+    const r=await fetch('/inventory/swap/execute',{method:'POST',body:fd(b)});const j=await r.json();
+    m.textContent='';
+    const steps=arr(j.steps);
+    let h='<div class="alert '+(j.ok?'ok':'warn')+'">'+(j.ok?'Swap complete.':'Swap finished with issues - see below.')+'</div>';
+    h+='<table><tr><th>Step</th><th>Result</th></tr>';
+    h+=steps.map(s=>'<tr><td>'+esc(s.step)+'</td><td class="'+(s.ok?'ok':'err')+'">'+(s.ok?'OK':'FAILED')+' - '+esc(s.msg)+'</td></tr>').join('');
+    h+='</table>';
+    document.getElementById('out').innerHTML=h;
+  }catch(e){m.textContent='swap failed: '+e;}
+}
+</script>
+
+$($data.close)

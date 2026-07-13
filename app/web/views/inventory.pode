@@ -1,0 +1,40 @@
+$($data.head)
+$($data.open)
+
+$(if(-not $data.configured){'<div class="alert warn"><b>Inventory not configured.</b> Add <code>data\inventory.config.json</code> (site + list IDs and the column map) to enable this page.</div>'})
+$(if($data.err){"<div class=`"alert err`">$(ConvertTo-PSCEncoded $data.err)</div>"})
+
+<div class="card">
+  <div style="margin:0 0 12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+    <a class="btn" href="/inventory/swap">Computer swap</a>
+    <a class="btn secondary" href="/inventory/status">Change status</a>
+    <a class="btn secondary" href="/inventory/add">Add computer</a>
+  </div>
+  <form method="get" action="/inventory" style="display:flex;gap:10px;align-items:center;margin:0 0 10px">
+    <input type="text" name="q" value="$(ConvertTo-PSCEncoded $data.q)" placeholder="Search by computer name..." style="max-width:280px" autofocus>
+    <button type="submit">Search</button>
+    $(if($data.q){"<a class=`"btn secondary`" href=`"/inventory`">Clear</a>"})
+    <span class="note" style="margin-left:auto">$(@($data.items).Count) shown</span>
+  </form>
+
+  <table>
+    <tr><th>Computer</th><th>Owner</th><th>Deployment status</th><th>Computer status</th><th>Intune</th><th>Model</th><th>Serial</th><th>Date issued</th><th>Warranty</th></tr>
+    $(if(@($data.items).Count -eq 0){'<tr><td colspan="9" class="note">No matching inventory items.</td></tr>'})
+    $(foreach($it in @($data.items)){
+      $di = ([string]$it.dateIssued) -replace '[T ].*$',''
+      $wr = ([string]$it.warranty) -replace '[T ].*$',''
+      "<tr><td><b>$(ConvertTo-PSCEncoded $it.title)</b></td>" +
+      "<td>$(ConvertTo-PSCEncoded $it.owner)</td>" +
+      "<td>$(ConvertTo-PSCEncoded $it.deploymentStatus)</td>" +
+      "<td>$(ConvertTo-PSCEncoded $it.computerStatus)</td>" +
+      "<td>$(ConvertTo-PSCEncoded $it.intuneStatus)</td>" +
+      "<td>$(ConvertTo-PSCEncoded $it.model)</td>" +
+      "<td class=`"note`">$(ConvertTo-PSCEncoded $it.serial)</td>" +
+      "<td class=`"note`">$(ConvertTo-PSCEncoded $di)</td>" +
+      "<td class=`"note`">$(ConvertTo-PSCEncoded $wr)</td></tr>"
+    })
+  </table>
+  <p class="note" style="margin-top:10px">Read-only view. Use <b>Computer swap</b> above to reassign a device (updates owner + status here and the Intune primary user together).</p>
+</div>
+
+$($data.close)

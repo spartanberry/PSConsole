@@ -1,5 +1,6 @@
 <#
 .SYNOPSIS  Users whose passwords expire within N days (default 14).
+.RUNEXAMPLE  Days=14
 .CATEGORY  Active Directory
 .NOTES     Pure ADSI. Honors domain maxPwdAge. Skips never-expire & disabled. Read-only.
 .ROLE      HelpDesk

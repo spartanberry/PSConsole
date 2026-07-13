@@ -1,5 +1,6 @@
 <#
 .SYNOPSIS  Disk-encryption (BitLocker/FileVault) status per managed device; flags unencrypted devices. -UnencryptedOnly to show only gaps.
+.RUNEXAMPLE  UnencryptedOnly=true
 .CATEGORY  Intune
 .NOTES     Graph app perms: DeviceManagementManagedDevices.Read.All. Read-only.
 .ROLE      HelpDesk

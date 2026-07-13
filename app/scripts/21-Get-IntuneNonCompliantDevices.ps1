@@ -1,5 +1,6 @@
 <#
 .SYNOPSIS  Managed devices that are not compliant (noncompliant / error / conflict, and optionally inGracePeriod).
+.RUNEXAMPLE  IncludeGracePeriod=false
 .CATEGORY  Intune
 .NOTES     Graph app perms: DeviceManagementManagedDevices.Read.All. Read-only.
 .ROLE      HelpDesk

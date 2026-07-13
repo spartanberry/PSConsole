@@ -117,8 +117,9 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
         # Scripts grouped by category (Active Directory / Entra ID / Intune), filtered to this role and
         # to the Intune add-on gate. Built as <optgroup> HTML in the route (same pattern as other pages).
         $scriptsHtml = Get-ScriptOptionsHtml -Dir $using:ScriptDir -Role $u.role
+        $examplesJson = Get-ScriptExamplesJson -Dir $using:ScriptDir -Role $u.role
         $chrome = Get-AppChrome -Active 'run' -User $u -Title 'Run scripts' -Subtitle 'Execute a curated PowerShell script' -HasLogo ([bool]((Get-Store config).logoFile))
-        Write-PodeViewResponse -Path 'dashboard' -Data @{ user=$u; scriptsHtml=$scriptsHtml; head=$chrome.head; open=$chrome.open; close=$chrome.close }
+        Write-PodeViewResponse -Path 'dashboard' -Data @{ user=$u; scriptsHtml=$scriptsHtml; examplesJson=$examplesJson; head=$chrome.head; open=$chrome.open; close=$chrome.close }
     }
 
     # Overview dashboard - available to admin AND helpdesk. Admins see recent audit activity; helpdesk
@@ -509,6 +510,163 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
         Set-Store onboarding $q
         Write-Audit $u.username $u.role 'onboarding-resolve' ([string]$rec.upn) @{ from=$prev } 'success' 0 'resolved manually'
         Write-PodeJsonResponse -Value @{ ok=$true }
+    }
+
+    # ---- Computer inventory (SharePoint, read-only for now; admin-only) ----
+    Add-PodeRoute -Method Get -Path '/inventory' -ScriptBlock {
+        if (-not (Require 'inventory' $WebEvent)) { return }
+        $u = $WebEvent.Session.Data.user
+        $q = [string]$WebEvent.Query['q']
+        $configured = [bool](Test-InventoryConfigured)
+        $items = @(); $err = ''
+        if ($configured) {
+            try { $items = @(Get-InventoryItems -Search $q) } catch { $err = "Inventory read failed: $($_.Exception.Message)" }
+        }
+        $chrome = Get-AppChrome -Active 'inventory' -User $u -Title 'Computer inventory' -Subtitle 'SharePoint - read-only' -HasLogo ([bool]((Get-Store config).logoFile))
+        Write-PodeViewResponse -Path 'inventory' -Data @{
+            user = $u; items = $items; q = $q; configured = $configured; err = $err
+            head = $chrome.head; open = $chrome.open; close = $chrome.close
+        }
+    }
+
+    # user typeahead for the swap form - Entra display-name prefix search via the READ app, members only.
+    # One non-paged call (Invoke-Graph auto-pages, so we hit the token + REST directly for a capped $top).
+    Add-PodeRoute -Method Get -Path '/inventory/users' -ScriptBlock {
+        if (-not (Require 'inventory' $WebEvent)) { return }
+        $q = ([string]$WebEvent.Query['q']).Trim()
+        $out = @()
+        if ($q.Length -ge 2) {
+            try {
+                $flt = [uri]::EscapeDataString("startswith(displayName,'$($q -replace "'", "''")')")
+                $tok = Get-GraphToken
+                $uri = "https://graph.microsoft.com/v1.0/users?`$filter=$flt&`$select=id,displayName,userPrincipalName&`$top=15"
+                $resp = Invoke-RestMethod -Method GET -Uri $uri -Headers @{ Authorization = "Bearer $tok" } -TimeoutSec 15
+                $out = @($resp.value | Where-Object { [string]$_.userPrincipalName -notmatch '#EXT#' } |
+                    ForEach-Object { @{ id = [string]$_.id; name = [string]$_.displayName; upn = [string]$_.userPrincipalName } } |
+                    Select-Object -First 10)
+            } catch {}
+        }
+        Write-PodeJsonResponse -Value @{ items = $out }
+    }
+
+    # device typeahead - inventory Title (computer-name) prefix search
+    Add-PodeRoute -Method Get -Path '/inventory/devices' -ScriptBlock {
+        if (-not (Require 'inventory' $WebEvent)) { return }
+        $q = ([string]$WebEvent.Query['q']).Trim()
+        $out = @()
+        if ($q.Length -ge 1) {
+            try { $out = @(Find-InventoryTitles -Query $q -Max 12 | ForEach-Object { @{ title = $_.title; owner = $_.owner; status = $_.deploymentStatus } }) } catch {}
+        }
+        Write-PodeJsonResponse -Value @{ items = $out }
+    }
+
+    Add-PodeRoute -Method Get -Path '/inventory/swap' -ScriptBlock {
+        if (-not (Require 'inventory' $WebEvent)) { return }
+        $u = $WebEvent.Session.Data.user
+        $chrome = Get-AppChrome -Active 'inventory' -User $u -Title 'Computer swap' -Subtitle 'Reassign a device + set Intune primary user' -HasLogo ([bool]((Get-Store config).logoFile))
+        Write-PodeViewResponse -Path 'inventory-swap' -Data @{
+            user = $u; configured = [bool](Test-InventoryConfigured); intuneOn = [bool](Test-IntuneConfigured)
+            head = $chrome.head; open = $chrome.open; close = $chrome.close
+        }
+    }
+
+    Add-PodeRoute -Method Post -Path '/inventory/swap/preview' -ScriptBlock {
+        if (-not (Require 'inventory' $WebEvent)) { return }
+        $b = $WebEvent.Data
+        Write-PodeJsonResponse -Value (Get-SwapPreview -UserDisplayName ([string]$b.userName) -OldTitle ([string]$b.oldDevice) -NewTitle ([string]$b.newDevice))
+    }
+
+    Add-PodeRoute -Method Post -Path '/inventory/swap/execute' -ScriptBlock {
+        if (-not (Require 'inventory' $WebEvent)) { return }
+        $u = $WebEvent.Session.Data.user
+        $b = $WebEvent.Data
+        $res = Invoke-ComputerSwap -UserDisplayName ([string]$b.userName) -UserId ([string]$b.userId) -OldTitle ([string]$b.oldDevice) -NewTitle ([string]$b.newDevice)
+        $st = if ($res.ok) { 'success' } else { 'partial' }
+        Write-Audit $u.username $u.role 'computer-swap' ([string]$b.newDevice) @{ user = [string]$b.userName; old = [string]$b.oldDevice; new = [string]$b.newDevice } $st 0 ''
+        try { Send-SwapNotification -Result $res -Operator $u.username | Out-Null } catch {}
+        Write-PodeJsonResponse -Value $res
+    }
+
+    # --- Change status (existing device) ---
+    Add-PodeRoute -Method Get -Path '/inventory/status' -ScriptBlock {
+        if (-not (Require 'inventory' $WebEvent)) { return }
+        $u = $WebEvent.Session.Data.user
+        $dep = @(); $comp = @()
+        try { $c = Get-InventoryChoices; $dep = @($c.deployment); $comp = @($c.computer) } catch {}
+        $chrome = Get-AppChrome -Active 'inventory' -User $u -Title 'Change computer status' -Subtitle 'Update deployment / computer status' -HasLogo ([bool]((Get-Store config).logoFile))
+        Write-PodeViewResponse -Path 'inventory-status' -Data @{
+            user = $u; deployChoices = $dep; computerChoices = $comp
+            head = $chrome.head; open = $chrome.open; close = $chrome.close
+        }
+    }
+    Add-PodeRoute -Method Post -Path '/inventory/status/apply' -ScriptBlock {
+        if (-not (Require 'inventory' $WebEvent)) { return }
+        $u = $WebEvent.Session.Data.user; $b = $WebEvent.Data
+        $hasComment = [bool](([string]$b.comment).Trim())
+        $res = Set-InventoryStatus -Title ([string]$b.device) -Deployment ([string]$b.deployment) -Computer ([string]$b.computer) -Comment ([string]$b.comment) -SetComment:$hasComment
+        $st = if ($res.ok) { 'success' } else { 'error' }
+        Write-Audit $u.username $u.role 'inventory-status' ([string]$b.device) @{ deployment = [string]$b.deployment; computer = [string]$b.computer } $st 0 ([string]$res.error)
+        Write-PodeJsonResponse -Value $res
+    }
+
+    # --- Add computer (single + CSV bulk; Intune autofill) ---
+    Add-PodeRoute -Method Get -Path '/inventory/add' -ScriptBlock {
+        if (-not (Require 'inventory' $WebEvent)) { return }
+        $u = $WebEvent.Session.Data.user
+        $dep = @(); $comp = @(); $intu = @()
+        try { $c = Get-InventoryChoices; $dep = @($c.deployment); $comp = @($c.computer); $intu = @($c.intune) } catch {}
+        $chrome = Get-AppChrome -Active 'inventory' -User $u -Title 'Add computer' -Subtitle 'Single entry or CSV bulk' -HasLogo ([bool]((Get-Store config).logoFile))
+        Write-PodeViewResponse -Path 'inventory-add' -Data @{
+            user = $u; intuneOn = [bool](Test-IntuneConfigured)
+            deployChoices = $dep; computerChoices = $comp; intuneChoices = $intu
+            head = $chrome.head; open = $chrome.open; close = $chrome.close
+        }
+    }
+    Add-PodeRoute -Method Get -Path '/inventory/lookup' -ScriptBlock {
+        if (-not (Require 'inventory' $WebEvent)) { return }
+        $d = $null; try { $d = Get-IntuneDeviceDetail ([string]$WebEvent.Query['device']) } catch {}
+        if ($d) { Write-PodeJsonResponse -Value @{ found = $true; serial = [string]$d.serialNumber; model = [string]$d.model; brand = [string]$d.manufacturer; os = [string]$d.operatingSystem } }
+        else    { Write-PodeJsonResponse -Value @{ found = $false } }
+    }
+    Add-PodeRoute -Method Post -Path '/inventory/add/single' -ScriptBlock {
+        if (-not (Require 'inventory' $WebEvent)) { return }
+        $u = $WebEvent.Session.Data.user; $b = $WebEvent.Data
+        $row = @{}
+        foreach ($k in 'title', 'brand', 'model', 'serial', 'os', 'deploymentStatus', 'computerStatus', 'intuneStatus', 'purchaseDate', 'purchasePrice', 'warranty', 'comment') { $row[$k] = [string]$b.$k }
+        $res = Add-InventoryComputer -Row $row
+        $st = if ($res.ok) { 'success' } else { 'error' }
+        Write-Audit $u.username $u.role 'inventory-add' ([string]$row.title) @{} $st 0 ([string]$res.error)
+        Write-PodeJsonResponse -Value $res
+    }
+    Add-PodeRoute -Method Get -Path '/inventory/add/template' -ScriptBlock {
+        if (-not (Require 'inventory' $WebEvent)) { return }
+        $hdr = 'ComputerName,Brand,Model,Serial,OS,DeploymentStatus,ComputerStatus,IntuneStatus,PurchaseDate,PurchasePrice,Warranty,Comment'
+        $sample = 'LAPTOP999,Dell,Latitude 5540,ABC12345,Windows,Needs Image,Needs to be Imaged,Not Managed,2026-01-15,1200,2029-01-15,new arrival'
+        Add-PodeHeader -Name 'Content-Disposition' -Value 'attachment; filename="inventory-template.csv"'
+        Write-PodeTextResponse -Value ("$hdr`r`n$sample`r`n") -ContentType 'text/csv'
+    }
+    Add-PodeRoute -Method Post -Path '/inventory/add/bulk' -ScriptBlock {
+        if (-not (Require 'inventory' $WebEvent)) { return }
+        $u = $WebEvent.Session.Data.user; $b = $WebEvent.Data
+        # rows arrive base64(JSON). Parse with JavaScriptSerializer, NOT ConvertFrom-Json: WinPS 5.1's
+        # ConvertFrom-Json collapses a top-level array of uniform simple objects into ONE columnar object
+        # (title -> @('a','b')), which merged every CSV row into one. JavaScriptSerializer returns real rows.
+        $rows = @()
+        try {
+            $json = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([string]$b.rows))
+            Add-Type -AssemblyName System.Web.Extensions
+            $rows = @((New-Object System.Web.Script.Serialization.JavaScriptSerializer).DeserializeObject($json))
+        } catch {}
+        $results = @()
+        foreach ($r in $rows) {
+            $row = @{}
+            foreach ($k in 'title', 'brand', 'model', 'serial', 'os', 'deploymentStatus', 'computerStatus', 'intuneStatus', 'purchaseDate', 'purchasePrice', 'warranty', 'comment') { $row[$k] = [string]$r[$k] }
+            $res = Add-InventoryComputer -Row $row
+            $results += @{ title = $res.title; ok = [bool]$res.ok; error = [string]$res.error }
+        }
+        $okCount = @($results | Where-Object { $_.ok }).Count
+        Write-Audit $u.username $u.role 'inventory-add-bulk' "$($results.Count) rows" @{ added = $okCount } 'success' 0 ''
+        Write-PodeJsonResponse -Value @{ total = $results.Count; added = $okCount; results = $results }
     }
 
     # ---- Scheduled reports (admin + helpdesk): each user manages their own; admins can view/edit/create

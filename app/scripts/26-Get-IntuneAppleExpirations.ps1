@@ -1,5 +1,6 @@
 <#
 .SYNOPSIS  Apple token/cert expirations that silently break iOS/macOS management: APNs push cert, VPP tokens, ADE/DEP tokens.
+.RUNEXAMPLE  Days=60
 .CATEGORY  Intune
 .NOTES     Graph app perms: DeviceManagementServiceConfig.Read.All. Read-only. -Days sets the "expiring soon" flag window (default 60).
 .ROLE      HelpDesk

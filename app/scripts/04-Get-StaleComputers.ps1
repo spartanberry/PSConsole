@@ -1,5 +1,6 @@
 <#
 .SYNOPSIS  Computer objects with no logon in N days (default 90).
+.RUNEXAMPLE  Days=90
 .CATEGORY  Active Directory
 .NOTES     Pure ADSI. Uses lastLogonTimestamp (replicated). Read-only.
 .ROLE      HelpDesk

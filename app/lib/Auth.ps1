@@ -120,7 +120,8 @@ function Invoke-Authenticate([string]$Username, [string]$Password) {
 
 function Test-Authorized([string]$Role, [string]$Action) {
     # actions: run, view-history, upload, configure, create-user, decommission-user, onboarding-run,
-    #          manage-reports, veeam-reports (the last two are admin-only via the default-deny below)
+    #          manage-reports, veeam-reports, inventory (all but the helpdesk list below are admin-only
+    #          via default-deny; 'inventory' stays admin-only until the swap feature is verified)
     switch ($Role) {
         'admin'    { return $true }
         # Helpdesk: run scripts, create + onboard + decommission users, manage their OWN scheduled reports,
