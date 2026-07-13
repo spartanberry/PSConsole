@@ -1,5 +1,6 @@
 <#
 .SYNOPSIS  Roll-up: managed devices grouped by compliance state and by OS platform, with percentages.
+.RUNEXAMPLE  (no parameters)
 .CATEGORY  Intune
 .NOTES     Graph app perms: DeviceManagementManagedDevices.Read.All. Read-only.
 .ROLE      HelpDesk

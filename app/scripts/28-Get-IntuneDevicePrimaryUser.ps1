@@ -1,5 +1,6 @@
 <#
 .SYNOPSIS  Primary user of each Intune managed device (device name -> primary user UPN/name). Optional -DeviceName / -UserPrincipalName substring filters.
+.RUNEXAMPLE  DeviceName=LAPTOP192
 .CATEGORY  Intune
 .NOTES     Graph app perms: DeviceManagementManagedDevices.Read.All. Read-only.
 .ROLE      HelpDesk

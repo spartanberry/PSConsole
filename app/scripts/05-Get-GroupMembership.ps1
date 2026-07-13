@@ -1,5 +1,6 @@
 <#
 .SYNOPSIS  Export direct members of an AD group.
+.RUNEXAMPLE  GroupName=Case Managers
 .CATEGORY  Active Directory
 .NOTES     Pure ADSI. -GroupName is the sAMAccountName of the group (required). Read-only.
 .ROLE      HelpDesk

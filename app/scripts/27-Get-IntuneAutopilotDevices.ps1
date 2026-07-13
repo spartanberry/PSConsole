@@ -1,5 +1,6 @@
 <#
 .SYNOPSIS  Windows Autopilot registered devices with profile-assignment + enrollment state; flags unassigned/failed. -UnassignedOnly for gaps.
+.RUNEXAMPLE  UnassignedOnly=true
 .CATEGORY  Intune
 .NOTES     Graph app perms: DeviceManagementServiceConfig.Read.All. Read-only.
 .ROLE      HelpDesk

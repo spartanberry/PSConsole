@@ -1,5 +1,6 @@
 <#
 .SYNOPSIS  Currently locked-out user accounts.
+.RUNEXAMPLE  (no parameters)
 .CATEGORY  Active Directory
 .NOTES     Pure ADSI. Filters lockoutTime>=1 then validates against domain lockoutDuration. Read-only.
 .ROLE      HelpDesk

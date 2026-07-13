@@ -1,5 +1,6 @@
 <#
 .SYNOPSIS  All disabled (accountEnabled=false) Entra users, cloud + synced.
+.RUNEXAMPLE  (no parameters)
 .CATEGORY  Entra ID
 .NOTES     Graph app perms: User.Read.All, AuditLog.Read.All (for last sign-in). Read-only.
 .ROLE      HelpDesk

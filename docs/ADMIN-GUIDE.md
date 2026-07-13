@@ -339,7 +339,53 @@ everything. A script that omits these tags defaults to category *Other* and role
 
 ---
 
-## 8d. Veeam remediation tracking (SharePoint, admin add-on)
+## 8d. SharePoint site access (Sites.Selected) — shared by the Veeam and Inventory add-ons
+
+Both SharePoint features — **Veeam remediation** (§8e) and **Computer inventory** (§8f) — read/write their
+lists **app-only** through the existing **PSConsole-Graph-Write** app, using the least-privilege
+**`Sites.Selected`** model: the app can touch **only** the specific sites you explicitly grant it, never all
+of SharePoint. You do the grant **once per site**; after that every PSConsole read/write is unattended (no
+admin sign-in ever again).
+
+**One-time, per app** (already done on this tenant): in Entra, add the **application** permission
+**`Sites.Selected`** to `PSConsole-Graph-Write` and **grant admin consent**.
+
+**Once per site — grant the app to that site.** This is a **tenant-governance action**, so it must be run by
+a **SharePoint Administrator or Global Administrator** — being a site owner/editor is **not** enough. Run it
+from **PowerShell 7** (the Graph SDK device-code flow is unreliable on Windows PowerShell 5.1):
+
+```powershell
+Connect-MgGraph -TenantId <tenant-guid> -Scopes Sites.FullControl.All -UseDeviceCode
+# sign in as the SharePoint/Global admin and APPROVE the Sites.FullControl.All consent
+(Get-MgContext).Scopes -contains 'Sites.FullControl.All'      # MUST be True before continuing
+
+$site = Get-MgSite -SiteId "contoso.sharepoint.com:/sites/ITOps"     # no trailing slash
+New-MgSitePermission -SiteId $site.Id -BodyParameter @{
+  roles = @('write')                                                 # read + update items (see note)
+  grantedToIdentities = @(@{ application = @{ id = '<graph-write-clientId>'; displayName = 'PSConsole-Graph-Write' } })
+}
+```
+
+- **`write` vs `manage`.** Use **`write`** to read and update items in a list that **already exists** (the
+  Inventory add-on, and the Veeam add-on's day-to-day sync). **Creating a list or columns is a schema change
+  that needs `manage`** — grant `manage` for that provisioning step, then dial back to `write` with
+  `Update-MgSitePermission -SiteId $site.Id -PermissionId <id> -Roles @('write')` (get `<id>` from
+  `Get-MgSitePermission`). Plain `write` returns **403** on schema changes.
+
+**Troubleshooting the grant (each of these was hit in practice):**
+- **403 `accessDenied` with SharePoint headers (`SPLogId`)** *after* the scope check passes → the signed-in
+  account doesn't actually **hold** SharePoint/Global Administrator. Consenting to the scope is **not** the
+  same as holding the role — run as a real admin (or have a Global Admin assign the SharePoint Administrator
+  role, then `Disconnect-MgGraph` and reconnect for a fresh token).
+- **"...device requesting access must be managed by \<org\>..."** → a **Conditional Access** policy requires a
+  compliant/managed device for admin sign-in. Run the grant from a managed (Intune-enrolled / Hybrid-joined)
+  machine, or have a Global Admin briefly exclude the account or the *Microsoft Graph Command Line Tools* app.
+- **The scope didn't stick** (grant 403s and `(Get-MgContext).Scopes` is missing `Sites.FullControl.All`) →
+  WAM reused a cached token on Windows PowerShell 5.1. Use **pwsh 7 + `-UseDeviceCode`** and re-check the scope.
+- After **any** role/permission change, **`Disconnect-MgGraph` and reconnect** — the token is minted before
+  the change and won't carry the new rights.
+
+## 8e. Veeam remediation tracking (SharePoint, admin add-on)
 
 **What it does.** PSConsole keeps a **daily backup-status history** in a SharePoint list - **one row per Veeam
 job per day** (the backup job and its Wasabi copy are separate rows). A one-time backfill seeds ~3 years of
@@ -358,20 +404,10 @@ Setup is one-time. You do **not** hand-build columns - the app creates the list 
 
 2. **Create an (empty) site/team site** to hold the list if you don't have one, e.g. `/sites/ITOps`.
 
-3. **Grant the app access to that one site.** If you have PnP.PowerShell, `Grant-PnPAzureADAppSitePermission`
-   works; if not, use the **Microsoft Graph PowerShell SDK** as a SharePoint/Global admin (this is the tested
-   path):
-   ```powershell
-   Install-Module Microsoft.Graph.Sites -Scope CurrentUser -Force
-   Connect-MgGraph -Scopes "Sites.FullControl.All"          # add -UseDeviceCode if WAM keeps picking the wrong account
-   $site = Get-MgSite -SiteId "contoso.sharepoint.com:/sites/ITOps"   # NOTE: no trailing slash
-   $params = @{ roles=@("manage"); grantedToIdentities=@(@{ application=@{ id="<graph-write-clientId>"; displayName="PSConsole-Graph-Write" } }) }
-   New-MgSitePermission -SiteId $site.Id -BodyParameter $params
-   ```
-   Creating a list/columns is a **schema change that needs `manage`** (plain `write` returns 403). Grant
-   `manage` for provisioning, then dial back to `write` (the daily item sync only needs `write`) with
-   `Update-MgSitePermission -SiteId $site.Id -PermissionId <id> -Roles @("write")` (find `<id>` via
-   `Get-MgSitePermission`).
+3. **Grant the app access to that one site** following **§8d "SharePoint site access"** above (including the
+   troubleshooting there). Because this step **creates the list + columns** (a schema change), grant the
+   **`manage`** role first, then dial back to **`write`** once the list exists — the daily item sync only
+   needs `write`.
 
 4. **Configure PSConsole, create the list, backfill history:**
    ```powershell
@@ -423,6 +459,37 @@ The columns the app creates (reference / internal names): each row = one job (`T
 | `LastSynced` | Single line of text | sync |
 
 ---
+
+## 8f. Computer inventory (SharePoint, admin add-on)
+
+**What it does.** An **admin-only** Inventory page browses your SharePoint **Computer_Inventory** list (search
+by computer name, owner, or serial), and a **Computer swap** form reassigns a device to a user — updating the
+inventory row (owner + status) **and** the device's **Intune primary user** in one action, then marking the
+old device as returned. Optional add-on: hidden until `data\inventory.config.json` exists; read and written
+app-only via **PSConsole-Graph-Write**.
+
+Setup (one-time):
+
+1. **Grant the app to the inventory site** per **§8d** — role **`write`** is enough (this add-on only reads
+   and updates existing items; it never creates the list or columns).
+2. **Create `data\inventory.config.json`** with the site + list IDs and a map from friendly names to the
+   list's **internal** column names. Get the site ID with `Get-MgSite`, the list ID from
+   `GET /sites/{siteId}/lists`, and column internal names from `GET /sites/{siteId}/lists/{listId}/columns`
+   (the `name` field — SharePoint truncates internal names to 32 chars and encodes spaces as `_x0020_`):
+   ```json
+   { "enabled": true, "siteId": "<site-id>", "listId": "<list-id>", "listName": "Computer_Inventory",
+     "fields": { "title": "Title", "owner": "field_2", "dateIssued": "field_16",
+       "deploymentStatus": "DeploymentStatus", "computerStatus": "Computer_x0020_Status",
+       "intuneStatus": "Intune_x0020_Migration_x0020_Sta", "serial": "field_12", "model": "field_4",
+       "comment": "field_17", "warranty": "field_14", "purchaseDate": "field_15" } }
+   ```
+   `Restart-Service PSConsole`, then **Inventory** appears in the sidebar for admins.
+
+**Column-write gotchas (if you adapt the field map to a different list):** SharePoint **dateTime** columns
+need **ISO 8601** (a bare `yyyy-MM-dd` is rejected). A **multi-select "checkbox" choice** column (like Intune
+Status here) can't be written as a string or a plain array — it needs a raw JSON body with the
+`"<field>@odata.type": "Collection(Edm.String)"` annotation (PSConsole's `Set-InventoryMultiChoice` handles
+this). Single-choice (dropdown/radio) columns take a plain string.
 
 ## 9. Troubleshooting
 

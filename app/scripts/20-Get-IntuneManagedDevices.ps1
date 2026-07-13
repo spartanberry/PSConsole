@@ -1,5 +1,6 @@
 <#
 .SYNOPSIS  Intune managed-device inventory: OS, user, ownership, compliance, last check-in, encryption. Optional -OS filter.
+.RUNEXAMPLE  OS=Windows
 .CATEGORY  Intune
 .NOTES     Graph app perms: DeviceManagementManagedDevices.Read.All. Read-only.
 .ROLE      HelpDesk

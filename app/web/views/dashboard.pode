@@ -4,8 +4,8 @@ $($data.open)
 <div class="card" style="max-width:880px">
   <h3>Run a script</h3>
   <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
-    <div><label>Script</label><select id="script">$($data.scriptsHtml)</select></div>
-    <div style="flex:1;min-width:260px"><label>Parameters <span class="note">- Key=Value;Key2=Value2</span></label><input id="params" placeholder="e.g. Days=30;GroupName=Sales" style="width:100%"></div>
+    <div><label>Script</label><select id="script" onchange="onScriptChange()">$($data.scriptsHtml)</select></div>
+    <div style="flex:1;min-width:260px"><label>Parameters <span class="note" id="paramHint">- Key=Value;Key2=Value2</span></label><input id="params" placeholder="" style="width:100%"></div>
     <div><button onclick="run()">Run</button></div>
   </div>
   $(if($data.user.role -eq 'admin'){'<div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)" class="note">Upload a .ps1 to the catalog: <input type="file" id="f" accept=".ps1" style="padding:5px"> <button class="secondary" onclick="upload()">Upload</button></div>'})
@@ -14,6 +14,14 @@ $($data.open)
 <div id="out"></div>
 
 <script>
+var EX = $($data.examplesJson);
+function onScriptChange(){
+ var sel=document.getElementById('script').value;
+ var ex=(EX&&EX[sel])?EX[sel]:'';
+ var inp=document.getElementById('params'), hint=document.getElementById('paramHint');
+ if(!ex||ex==='(no parameters)'){ inp.placeholder='no parameters needed'; hint.textContent='- none needed'; }
+ else { inp.placeholder='e.g. '+ex; hint.textContent='- e.g. '+ex; }
+}
 function aesc(s){return (s==null?'':String(s)).replace(/[&<>]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c];});}
 function acell(v){ if(v==null)return ''; if(typeof v==='object')return aesc(JSON.stringify(v)); return aesc(String(v)); }
 function fmtTs(v){
@@ -79,6 +87,7 @@ function renderAudit(rows,from,to){
  h+='</table></div><div style="margin-top:12px"><button onclick=\'csv('+JSON.stringify(JSON.stringify(rows))+')\'>Export CSV</button></div></div>';
  o.innerHTML=h;
 }
+onScriptChange();
 (function(){try{var p=new URLSearchParams(location.search);if(p.get('view')==='audit')loadAudit();}catch(e){}})();
 </script>
 $($data.close)

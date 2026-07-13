@@ -1,0 +1,56 @@
+$($data.head)
+$($data.open)
+
+<div class="card">
+  <a class="note" href="/inventory">&lsaquo; Back to inventory</a>
+  <h3 style="margin:6px 0 2px">Change computer status</h3>
+  <p class="note">Set a device's deployment / computer status (e.g. Needs Repair, Sold / Disposed). Leave a dropdown on "(leave unchanged)" to keep it.</p>
+
+  <div class="grid2">
+    <div>
+      <label>Computer</label>
+      <input id="device" list="devList" autocomplete="off" placeholder="Computer name">
+      <datalist id="devList"></datalist>
+    </div>
+    <div></div>
+    <div>
+      <label>Deployment status</label>
+      <select id="deployment"><option value="">(leave unchanged)</option>$(foreach($o in @($data.deployChoices)){"<option>$(ConvertTo-PSCEncoded $o)</option>"})</select>
+    </div>
+    <div>
+      <label>Computer status</label>
+      <select id="computer"><option value="">(leave unchanged)</option>$(foreach($o in @($data.computerChoices)){"<option>$(ConvertTo-PSCEncoded $o)</option>"})</select>
+    </div>
+  </div>
+  <label>Comment <span class="note">- optional</span></label>
+  <input id="comment" placeholder="e.g. cracked screen, RMA #12345">
+  <div style="margin-top:12px;display:flex;gap:10px;align-items:center">
+    <button onclick="apply()">Apply</button>
+    <span id="msg" class="note"></span>
+  </div>
+</div>
+
+<script>
+function val(id){return document.getElementById(id).value;}
+function esc(s){return (s==null?'':String(s)).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function fd(o){const f=new FormData();for(const k in o)f.append(k,o[k]);return f;}
+function arr(x){return Array.isArray(x)?x:(x?[x]:[]);}
+let t;document.getElementById('device').addEventListener('input',function(){
+  clearTimeout(t);const q=this.value.trim();if(q.length<1)return;
+  t=setTimeout(async()=>{try{const r=await fetch('/inventory/devices?q='+encodeURIComponent(q));const j=await r.json();
+    document.getElementById('devList').innerHTML=arr(j.items).map(x=>'<option value="'+esc(x.title)+'">'+esc(x.owner||'')+'</option>').join('');}catch(e){}},250);
+});
+async function apply(){
+  const dev=val('device').trim();const dep=val('deployment');const comp=val('computer');
+  if(!dev){alert('Enter a computer.');return;}
+  if(!dep&&!comp&&!val('comment').trim()){alert('Pick a status (or add a comment) to change.');return;}
+  const m=document.getElementById('msg');m.textContent='applying...';
+  try{
+    const r=await fetch('/inventory/status/apply',{method:'POST',body:fd({device:dev,deployment:dep,computer:comp,comment:val('comment')})});
+    const j=await r.json();
+    m.innerHTML=j.ok?'<span class="ok">Updated '+esc(dev)+'.</span>':'<span class="err">Failed: '+esc(j.error||'unknown')+'</span>';
+  }catch(e){m.textContent='failed: '+e;}
+}
+</script>
+
+$($data.close)

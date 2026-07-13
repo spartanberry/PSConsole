@@ -1,5 +1,6 @@
 <#
 .SYNOPSIS  Members of every activated Entra directory role (Global Admin, etc.) - privilege audit.
+.RUNEXAMPLE  RoleNameLike=*Admin*
 .CATEGORY  Entra ID
 .NOTES     Graph app perms: RoleManagement.Read.Directory or Directory.Read.All. Read-only.
 .ROLE      HelpDesk

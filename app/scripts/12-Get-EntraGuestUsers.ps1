@@ -1,5 +1,6 @@
 <#
 .SYNOPSIS  Guest (B2B) accounts with invite state and last sign-in - for access reviews / cleanup.
+.RUNEXAMPLE  StaleDays=90
 .CATEGORY  Entra ID
 .NOTES     Graph app perms: User.Read.All, AuditLog.Read.All. Read-only.
 .ROLE      HelpDesk

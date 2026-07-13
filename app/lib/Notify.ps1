@@ -104,6 +104,7 @@ function Get-NotifyRecipients([string]$Event) {
         'create'       { $c.createTo }
         'decommission' { $c.decommissionTo }
         'veeam-alert'  { $c.veeamAlertTo }
+        'swap'         { $c.swapNotifyTo }
         default        { $c.to }
     }
     $list = @($list) | Where-Object { $_ }
@@ -229,6 +230,29 @@ function Send-VeeamAlertNotification {
     $subj = if ($failed.Count) { "PSConsole: Veeam backup FAILED ($($failed.Count)) - action required" }
             else               { "PSConsole: Veeam backup warning ($($warn.Count))" }
     Send-PSCMail -To (Get-NotifyRecipients 'veeam-alert') -Subject $subj -BodyHtml $body
+}
+
+# Email a computer-swap confirmation (recipient = swapNotifyTo). Best-effort.
+function Send-SwapNotification {
+    param([pscustomobject]$Result, [string]$Operator)
+    $rows = foreach ($s in @($Result.steps)) {
+        $flag = if ($s.ok) { 'OK' } else { 'FAILED' }
+        New-NotifyRow $s.step "$flag - $($s.msg)"
+    }
+    $status = if ($Result.ok) { 'complete' } else { 'partial - see steps below' }
+    $body = "<div style='font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#111'>" +
+            "<h2 style='margin:0 0 8px'>Computer swap $status</h2>" +
+            "<table style='border-collapse:collapse'>" +
+            (New-NotifyRow 'Assigned to'  $Result.user) +
+            (New-NotifyRow 'New computer' $Result.newTitle) +
+            (New-NotifyRow 'Old computer' $Result.oldTitle) +
+            (New-NotifyRow 'Performed by' $Operator) +
+            (New-NotifyRow 'When'         ((Get-Date).ToString('yyyy-MM-dd HH:mm'))) +
+            ($rows -join '') +
+            "</table><p style='color:#888;font-size:12px'>Sent by PSConsole - computer swap.</p></div>"
+    $subj = if ($Result.ok) { "PSConsole: computer swap - $($Result.newTitle) -> $($Result.user)" }
+            else            { "PSConsole: computer swap PARTIAL - $($Result.newTitle)" }
+    Send-PSCMail -To (Get-NotifyRecipients 'swap') -Subject $subj -BodyHtml $body
 }
 
 function Send-UserDecommissionedNotification {

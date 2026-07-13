@@ -1,5 +1,6 @@
 <#
 .SYNOPSIS  Health board for Intune management connectors: Exchange, NDES/SCEP, Managed Google Play, MTD, and device-mgmt partners.
+.RUNEXAMPLE  StaleDays=7
 .CATEGORY  Intune
 .NOTES     Graph app perms: DeviceManagementServiceConfig.Read.All + DeviceManagementConfiguration.Read.All. Read-only.
 .ROLE      HelpDesk

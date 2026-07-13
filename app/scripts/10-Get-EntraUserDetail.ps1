@@ -1,5 +1,6 @@
 <#
 .SYNOPSIS  360-degree lookup for a single Entra user: status, type, licenses, MFA, last sign-in, manager.
+.RUNEXAMPLE  UserPrincipalName=user@example.com
 .CATEGORY  Entra ID
 .NOTES     Graph app perms: User.Read.All, Directory.Read.All, AuditLog.Read.All. Read-only.
 .ROLE      HelpDesk
