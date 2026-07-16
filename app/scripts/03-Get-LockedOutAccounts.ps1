@@ -13,6 +13,10 @@ $domain = [ADSI]"LDAP://$domainDN"
 $lockoutDurTicks = [Math]::Abs([int64]($domain.ConvertLargeIntegerToInt64($domain.lockoutDuration.Value)))
 $now = Get-Date
 
+# Emit a preformatted local string: WinPS 5.1 ConvertTo-Json renders a raw DateTime as
+# "/Date(1333728371000)/", which is what would reach the table, CSV export and emailed reports.
+function Format-Stamp { param($Value) if ($Value) { ([datetime]$Value).ToString('MM/dd/yyyy h:mm tt') } else { '' } }
+
 $ds = New-Object System.DirectoryServices.DirectorySearcher([ADSI]"LDAP://$domainDN")
 $ds.Filter = "(&(objectCategory=person)(objectClass=user)(lockoutTime>=1))"
 $ds.PageSize = 1000
@@ -31,4 +35,7 @@ $ds.FindAll() | ForEach-Object {
             LockedOutAt    = $lockedAt
         }
     }
-} | Sort-Object LockedOutAt -Descending
+# Sort on the real DateTime FIRST, then project the formatted string. Formatting before the sort
+# would order lexicographically (by month), silently scrambling "most recently locked out first".
+} | Sort-Object LockedOutAt -Descending |
+    Select-Object SamAccountName, DisplayName, @{ Name = 'LockedOutAt'; Expression = { Format-Stamp $_.LockedOutAt } }

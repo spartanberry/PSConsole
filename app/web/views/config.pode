@@ -10,8 +10,79 @@ $($data.open)
     <label style="display:inline-flex;align-items:center;gap:8px"><input type="checkbox" name="ldapUseSsl" value="true" $(if($data.cfg.ldapUseSsl){'checked'}) style="width:auto"> Use LDAPS (SSL)</label>
     <label>Admin role - AD group CNs (comma separated)</label><input name="adminGroups" value="$(ConvertTo-PSCEncoded ($data.cfg.roleMap.admin -join ', '))" style="width:100%">
     <label>HelpDesk role - AD group CNs (comma separated)</label><input name="helpdeskGroups" value="$(ConvertTo-PSCEncoded ($data.cfg.roleMap.helpdesk -join ', '))" style="width:100%">
-    <p class="note">Admin groups get full config + upload + run + provisioning. HelpDesk groups get run + decommission. All script execution uses the service account's read-only rights.</p>
+    <p class="note">Admin groups get full config + upload + run + provisioning. HelpDesk group access is controlled per-feature below. All script execution uses the service account's read-only rights.</p>
     <button type="submit">Save</button>
+  </form>
+</div>
+
+<div class="card" style="max-width:660px">
+  <h3>Helpdesk feature access</h3>
+  <p class="note">Choose which features helpdesk-role users can see and use. Admins always have everything. Config, Audit, and script upload are admin-only and not listed here. UniFi Network Scripts appear on the Run page, so also enable <b>Run Scripts</b> for them to be usable.</p>
+  <p class="note"><b>Hyper-V (view)</b> shows the Hyper-V tab read-only (including listing checkpoints under your own credentials). <b>Hyper-V VM migration</b> and <b>Hyper-V checkpoint removal</b> each add a write action, and are separate so they can be granted independently of the tab and of each other. Every write runs as the operator's <b>own</b> AD credentials, so granting one to someone without Hyper-V rights still fails at authentication and changes nothing.</p>
+  <form method="post" action="/admin/helpdesk-features">
+    $(foreach($ft in $data.hdCatalog){"<label style='display:flex;align-items:center;gap:8px;font-weight:normal;margin:6px 0'><input type='checkbox' name='$($ft.action)' value='true' $(if($data.hdEnabled -contains $ft.action){'checked'}) style='width:auto'> $($ft.label)</label>"})
+    <button type="submit" style="margin-top:10px">Save helpdesk access</button>
+  </form>
+</div>
+
+$(if($data.hypervOn){
+"<div class='card' style='max-width:660px'>
+  <h3>Hyper-V VM migration</h3>
+  <p class='note'>Master switch for the migration card on the Hyper-V tab. This is deliberately <b>not</b> editable here: it is a file-only flag, so turning live VM migration on takes filesystem access to this server rather than a click in a browser. Shown here so its state is discoverable.</p>
+  <p>Status: $($data.hypervMigPill)</p>
+  <p class='note'>To change it, edit <code>&quot;migrationEnabled&quot;</code> in <code>data\hyperv.config.json</code> on this server. It is read per request &mdash; no restart needed. Per-role access is the <b>Hyper-V VM migration</b> checkbox above.</p>
+</div>"
+})
+
+<div class="card" style="max-width:660px">
+  <h3>Audit log</h3>
+  <p class="note">The audit log rotates into an archive file once it reaches the size below, so no single file ever bloats - searches and the dashboard stay fast. Archives older than the retention period are pruned automatically. Set retention to <b>0</b> to keep archives forever.</p>
+  <form method="post" action="/admin/audit-config">
+    <label>Rotate when the log reaches (MB)</label>
+    <input name="auditMaxMB" value="$(if($data.cfg.auditMaxMB){ConvertTo-PSCEncoded ([string]$data.cfg.auditMaxMB)}else{'5'})" style="width:100%">
+    <label>Keep archives for (days) <span class="note">- 0 = forever</span></label>
+    <input name="auditRetentionDays" value="$(if($null -ne $data.cfg.auditRetentionDays){ConvertTo-PSCEncoded ([string]$data.cfg.auditRetentionDays)}else{'730'})" style="width:100%">
+    <button type="submit">Save</button>
+  </form>
+</div>
+
+<div class="card" style="max-width:660px">
+  <h3>Expiration alerts</h3>
+  <p class="note">A weekly digest (Monday 08:00) of Entra app secrets/certificates and Apple APNs/DEP/VPP tokens that are expired or expiring within the window below. Delivered to the channels you pick. Email uses the configured SMTP; Teams uses the reusable webhook channel (set it with <code>graph-setup\Set-TeamsConfig.ps1</code>).</p>
+  <form method="post" action="/admin/expiration-alert">
+    <label style="display:inline-flex;align-items:center;gap:8px"><input type="checkbox" name="enabled" value="true" $(if($data.expAlert.enabled){'checked'}) style="width:auto"> Enable the weekly expiration digest</label>
+    <label>Expiring-soon window (days)</label>
+    <input name="thresholdDays" value="$(ConvertTo-PSCEncoded ([string]$data.expAlert.thresholdDays))" style="width:100%">
+    <label style="margin-top:8px">Channels</label>
+    <label style="display:inline-flex;align-items:center;gap:8px;font-weight:normal"><input type="checkbox" name="chEmail" value="true" $(if($data.expAlert.channels -contains 'email'){'checked'}) style="width:auto"> Email $(if(-not $data.smtpConfigured){'<span class="note">(SMTP not configured)</span>'})</label>
+    <label style="display:inline-flex;align-items:center;gap:8px;font-weight:normal"><input type="checkbox" name="chTeams" value="true" $(if($data.expAlert.channels -contains 'teams'){'checked'}) style="width:auto"> Teams $(if(-not $data.teamsConfigured){'<span class="note">(Teams webhook not configured)</span>'})</label>
+    <label style="margin-top:8px">Email recipients (comma separated) <span class="note">- blank uses the SMTP default "to"</span></label>
+    <input name="recipients" value="$(ConvertTo-PSCEncoded (@($data.expAlert.recipients) -join ', '))" style="width:100%">
+    <button type="submit" style="margin-top:10px">Save</button>
+  </form>
+  <button type="button" onclick="testExpAlert(this)" class="secondary" style="margin-top:10px">Send digest now (test)</button>
+  <span id="expTestResult" class="note" style="margin-left:10px"></span>
+  <script>
+    function testExpAlert(btn){
+      var out=document.getElementById('expTestResult'); btn.disabled=true; out.textContent='Sending...';
+      fetch('/admin/expiration-alert/test',{method:'POST'}).then(function(r){return r.json();}).then(function(d){
+        btn.disabled=false;
+        if(!d.ok){ out.textContent='Failed: '+(d.error||'unknown'); return; }
+        var parts=[]; parts.push(d.actionable+' actionable of '+d.total+' item(s)');
+        if(d.email){ parts.push('email: '+(d.email.ok?'sent':((d.email.error||d.email.note)||'not sent'))); }
+        if(d.teams){ parts.push('teams: '+(d.teams.ok?'sent':((d.teams.error||d.teams.note)||'not sent'))); }
+        out.textContent=parts.join(' | ');
+      }).catch(function(e){ btn.disabled=false; out.textContent='Error: '+e; });
+    }
+  </script>
+</div>
+
+<div class="card" style="max-width:660px">
+  <h3>Teams event notifications</h3>
+  <p class="note">Also post a Teams card for these events (in addition to the existing email). Uses the reusable Teams channel; $(if($data.teamsConfigured){'the channel is <b>configured</b>.'}else{'<b>configure it first</b> with <code>graph-setup\Set-TeamsConfig.ps1</code> - until then these post nothing.'})</p>
+  <form method="post" action="/admin/teams-events">
+    $(foreach($ev in $data.teamsEventCatalog){"<label style='display:flex;align-items:center;gap:8px;font-weight:normal;margin:6px 0'><input type='checkbox' name='$($ev.key)' value='true' $(if($data.teamsEventsEnabled -contains $ev.key){'checked'}) style='width:auto'> $($ev.label)</label>"})
+    <button type="submit" style="margin-top:10px">Save Teams events</button>
   </form>
 </div>
 

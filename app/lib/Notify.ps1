@@ -70,6 +70,111 @@ function Send-PSCNotification {
     Send-PSCMail -To $to -Subject $Subject -BodyHtml $BodyHtml
 }
 
+# === Microsoft Teams channel (reusable) ==========================================================
+# A general-purpose Teams notification channel usable by ANY feature (expiration alerts, and future
+# ones). Config lives in data\teams.config.json:
+#   { "enabled": true, "webhookUrl": "<DPAPI LocalMachine-encrypted Power Automate Workflows URL>" }
+# We post an Adaptive Card in the type:message/attachments envelope that the Teams "Workflows"
+# (Power Automate) 'When a Teams webhook request is received' trigger expects. The legacy Office 365
+# Incoming Webhook (being retired by Microsoft) also accepts this shape. Best-effort: never throws.
+function Get-TeamsConfigPath {
+    if ($env:PSCONSOLE_DATA) { Join-Path $env:PSCONSOLE_DATA 'teams.config.json' }
+    else { Join-Path $PSScriptRoot '..\..\data\teams.config.json' }
+}
+# Config may hold a default `webhookUrl` (the shared channel) plus named `targets` (e.g. a personal
+# `veeam` flow). -Target picks that named URL if present, else falls back to the default channel.
+function Test-TeamsConfigured {
+    param([string]$Target)
+    $p = Get-TeamsConfigPath
+    if (-not (Test-Path $p)) { return $false }
+    try { $c = Get-Content $p -Raw | ConvertFrom-Json } catch { return $false }
+    if (-not $c.enabled) { return $false }
+    return [bool](Get-TeamsWebhookUrl -Target $Target)
+}
+function Get-TeamsWebhookUrl {
+    param([string]$Target)
+    if (-not (Test-Path (Get-TeamsConfigPath))) { return $null }
+    try {
+        $c = Get-Content (Get-TeamsConfigPath) -Raw | ConvertFrom-Json
+        $enc = $null
+        if ($Target -and $c.targets -and ($c.targets.PSObject.Properties.Name -contains $Target)) { $enc = [string]$c.targets.$Target }
+        if (-not $enc) { $enc = [string]$c.webhookUrl }
+        if (-not $enc) { return $null }
+        Add-Type -AssemblyName System.Security
+        [Text.Encoding]::UTF8.GetString([Security.Cryptography.ProtectedData]::Unprotect([Convert]::FromBase64String($enc),$null,'LocalMachine'))
+    } catch { $null }
+}
+# Build the Adaptive-Card envelope. $Facts = array of @{ title=..; value=.. } (order preserved).
+# Keys are assigned individually (not via an [ordered]@{...} initializer) to dodge a WinPS 5.1 binder
+# quirk ("Argument types do not match") that trips on nested ordered-dictionary literals.
+function New-TeamsCardBody {
+    param([string]$Title,[string]$Text,[object[]]$Facts,[string]$Color = 'Default')
+    $body = New-Object System.Collections.Generic.List[object]
+    if ($Title) {
+        $tb = [ordered]@{}; $tb['type']='TextBlock'; $tb['text']=$Title; $tb['weight']='Bolder'; $tb['size']='Large'; $tb['wrap']=$true; $tb['color']=$Color
+        $body.Add($tb)
+    }
+    if ($Text) {
+        $tx = [ordered]@{}; $tx['type']='TextBlock'; $tx['text']=$Text; $tx['wrap']=$true
+        $body.Add($tx)
+    }
+    $factList = New-Object System.Collections.Generic.List[object]
+    foreach ($f in @($Facts)) {
+        if (-not $f) { continue }
+        $fd = [ordered]@{}; $fd['title']=[string]$f.title; $fd['value']=[string]$f.value
+        $factList.Add($fd)
+    }
+    if ($factList.Count) {
+        $fs = [ordered]@{}; $fs['type']='FactSet'; $fs['facts']=$factList.ToArray()
+        $body.Add($fs)
+    }
+    $card = [ordered]@{}; $card['$schema']='http://adaptivecards.io/schemas/adaptive-card.json'; $card['type']='AdaptiveCard'; $card['version']='1.4'; $card['body']=$body.ToArray()
+    $att = [ordered]@{}; $att['contentType']='application/vnd.microsoft.card.adaptive'; $att['content']=$card
+    $msg = [ordered]@{}; $msg['type']='message'; $msg['attachments']=@($att)
+    $msg
+}
+# Post a card to the configured Teams channel. Returns @{ ok=..; note/error=.. }. Never throws.
+function Send-TeamsMessage {
+    param([string]$Title,[string]$Text,[object[]]$Facts,[string]$Color = 'Default',[string]$Target)
+    if (-not (Test-TeamsConfigured -Target $Target)) { return @{ ok=$false; note='teams not configured' } }
+    $url = Get-TeamsWebhookUrl -Target $Target
+    if (-not $url) { return @{ ok=$false; note='no teams webhook url' } }
+    try {
+        $payload = New-TeamsCardBody -Title $Title -Text $Text -Facts $Facts -Color $Color | ConvertTo-Json -Depth 12
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Invoke-RestMethod -Method Post -Uri $url -ContentType 'application/json' -Body $payload -TimeoutSec 25 | Out-Null
+        return @{ ok=$true }
+    } catch {
+        Write-NotifyLog "teams post failed: $($_.Exception.Message)"
+        return @{ ok=$false; error=$_.Exception.Message }
+    }
+}
+
+# Which provisioning-lifecycle events ALSO post a Teams card (in addition to email). Opt-in per event,
+# stored in the main config store under `teamsEvents` (a list of these keys). Rendered as checkboxes in
+# Config; only meaningful when the Teams channel is configured.
+$script:TeamsEventCatalog = @(
+    [pscustomobject]@{ key = 'user-created';  label = 'User created' }
+    [pscustomobject]@{ key = 'onboarding';    label = 'Cloud onboarding outcome' }
+    [pscustomobject]@{ key = 'decommission';  label = 'User decommissioned' }
+)
+function Get-TeamsEventCatalog { $script:TeamsEventCatalog }
+function Get-TeamsEvents {
+    $valid = @($script:TeamsEventCatalog | ForEach-Object { $_.key })
+    $cfg = Get-Store config
+    $set = @()
+    if ($cfg -and ($cfg.PSObject.Properties.Name -contains 'teamsEvents') -and $null -ne $cfg.teamsEvents) { $set = @($cfg.teamsEvents) }
+    @(@($set) | Where-Object { $_ -in $valid })
+}
+# Post a Teams card for a lifecycle event, but ONLY if Teams is configured AND that event is enabled.
+# Best-effort (Send-TeamsMessage never throws). Used by the notification helpers below.
+function Send-EventTeamsCard {
+    param([string]$Event,[string]$Title,[string]$Text,[object[]]$Facts,[string]$Color = 'Default')
+    if (-not (Test-TeamsConfigured)) { return @{ ok=$false; note='teams not configured' } }
+    if ($Event -notin (Get-TeamsEvents)) { return @{ ok=$false; note='event not enabled for teams' } }
+    Send-TeamsMessage -Title $Title -Text $Text -Facts $Facts -Color $Color
+}
+
 # Render script-run rows (array of objects) as a simple HTML table for emailing. Values are encoded.
 function ConvertTo-ResultHtml {
     param([string]$Title,$Rows)
@@ -105,6 +210,7 @@ function Get-NotifyRecipients([string]$Event) {
         'decommission' { $c.decommissionTo }
         'veeam-alert'  { $c.veeamAlertTo }
         'swap'         { $c.swapNotifyTo }
+        'expiration'   { $c.expirationTo }
         default        { $c.to }
     }
     $list = @($list) | Where-Object { $_ }
@@ -132,7 +238,14 @@ function Send-UserCreatedNotification {
             (New-NotifyRow 'Created by'   $Operator) +
             (New-NotifyRow 'When'         ((Get-Date).ToString('yyyy-MM-dd HH:mm'))) +
             "</table><p style='color:#888;font-size:12px'>Sent by PSConsole. Cloud groups/license are applied after the account syncs to Entra.</p></div>"
-    Send-PSCMail -To (Get-NotifyRecipients 'create') -Subject "PSConsole: user created - $($Plan.displayName)" -BodyHtml $body
+    $mail = Send-PSCMail -To (Get-NotifyRecipients 'create') -Subject "PSConsole: user created - $($Plan.displayName)" -BodyHtml $body
+    Send-EventTeamsCard -Event 'user-created' -Title "User created: $($Plan.displayName)" -Text "Created by $Operator." -Color 'Good' -Facts @(
+        @{ title='Username';   value=[string]$Plan.samAccountName }
+        @{ title='Sign-in';    value=[string]$Plan.userPrincipalName }
+        @{ title='Department'; value=[string]$Plan.department }
+        @{ title='OU';         value=[string]$Dn }
+    ) | Out-Null
+    $mail
 }
 
 # Role-based recipients for a Phase-2 onboarding outcome email:
@@ -179,7 +292,17 @@ function Send-OnboardingOutcomeNotification {
             "</table><p style='color:#888;font-size:12px'>Sent by PSConsole - Phase 2 (cloud) onboarding.</p></div>"
     $subj = if ($Outcome -eq 'complete') { "PSConsole: onboarding complete - $($Rec.displayName)" }
             else                          { "PSConsole: onboarding FAILED - $($Rec.displayName)" }
-    Send-PSCMail -To (Get-OnboardNotifyRecipients $Role) -Subject $subj -BodyHtml $body
+    $mail = Send-PSCMail -To (Get-OnboardNotifyRecipients $Role) -Subject $subj -BodyHtml $body
+    $tColor = if ($Outcome -eq 'complete') { 'Good' } else { 'Attention' }
+    $tTitle = if ($Outcome -eq 'complete') { "Cloud onboarding complete: $($Rec.displayName)" } else { "Cloud onboarding FAILED: $($Rec.displayName)" }
+    Send-EventTeamsCard -Event 'onboarding' -Title $tTitle -Text "Phase 2 (cloud) onboarding outcome." -Color $tColor -Facts @(
+        @{ title='Sign-in';      value=[string]$Rec.upn }
+        @{ title='Department';   value=[string]$Rec.department }
+        @{ title='Final status'; value=[string]$Rec.cloudStatus }
+        @{ title='License';      value=[string]$Rec.licenseStatus }
+        @{ title='Groups added'; value=$added }
+    ) | Out-Null
+    $mail
 }
 
 # Email a Veeam backup alert summarizing NEW Failed/Warning sessions (one message, table of jobs).
@@ -229,7 +352,18 @@ function Send-VeeamAlertNotification {
             "<p style='color:#888;font-size:12px'>Sent by PSConsole. Warnings are informational; failed jobs require remediation.</p></div>"
     $subj = if ($failed.Count) { "PSConsole: Veeam backup FAILED ($($failed.Count)) - action required" }
             else               { "PSConsole: Veeam backup warning ($($warn.Count))" }
-    Send-PSCMail -To (Get-NotifyRecipients 'veeam-alert') -Subject $subj -BodyHtml $body
+    $mail = Send-PSCMail -To (Get-NotifyRecipients 'veeam-alert') -Subject $subj -BodyHtml $body
+    # Also post a Teams card to the personal 'veeam' target (falls back to the shared channel if that
+    # target isn't set). Additive to the email; no-op unless a Teams URL resolves for 'veeam'.
+    if (Test-TeamsConfigured -Target 'veeam') {
+        $tFacts = @(@($failed + $warn) | Select-Object -First 15 | ForEach-Object {
+            $st = try { ([datetime]$_.Start).ToString('yyyy-MM-dd HH:mm') } catch { [string]$_.Start }
+            @{ title = "$($_.Result): $($_.Job)"; value = "started $st" }
+        })
+        $tColor = if ($failed.Count) { 'Attention' } else { 'Warning' }
+        Send-TeamsMessage -Target 'veeam' -Title "Veeam backup alert - $summary" -Text 'Failed jobs need remediation; warnings are informational.' -Facts $tFacts -Color $tColor | Out-Null
+    }
+    $mail
 }
 
 # Email a computer-swap confirmation (recipient = swapNotifyTo). Best-effort.
@@ -272,5 +406,12 @@ function Send-UserDecommissionedNotification {
             (New-NotifyRow 'Decommissioned by' $Operator) +
             (New-NotifyRow 'When'         ((Get-Date).ToString('yyyy-MM-dd HH:mm'))) +
             "</table><p style='color:#888;font-size:12px'>Sent by PSConsole. Entra removal follows on the next ADSync cycle (out of sync scope).</p></div>"
-    Send-PSCMail -To (Get-NotifyRecipients 'decommission') -Subject "PSConsole: user decommissioned - $($Plan.displayName)" -BodyHtml $body
+    $mail = Send-PSCMail -To (Get-NotifyRecipients 'decommission') -Subject "PSConsole: user decommissioned - $($Plan.displayName)" -BodyHtml $body
+    Send-EventTeamsCard -Event 'decommission' -Title "User decommissioned: $($Plan.displayName)" -Text "Decommissioned by $Operator." -Color 'Warning' -Facts @(
+        @{ title='Username';         value=[string]$Plan.sam }
+        @{ title='Sign-in';          value=[string]$Plan.upn }
+        @{ title='Now at';           value=[string]$Result.dn }
+        @{ title='On-prem groups removed'; value=$removed }
+    ) | Out-Null
+    $mail
 }

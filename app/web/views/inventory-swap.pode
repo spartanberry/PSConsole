@@ -28,6 +28,11 @@ $(if(-not $data.intuneOn){'<div class="alert warn">Intune add-on is off - a swap
       <input id="oldDevice" list="oldList" autocomplete="off" placeholder="Computer name">
       <datalist id="oldList"></datalist>
     </div>
+    <div></div>
+    <div>
+      <label>Old computer physical status <span class="note">- type it in (optional)</span></label>
+      <input id="oldPhysical" autocomplete="off" placeholder="e.g. Good, cracked screen, missing keys">
+    </div>
   </div>
 
   <div style="margin-top:14px;display:flex;gap:10px;align-items:center">
@@ -50,7 +55,7 @@ $(if(-not $data.intuneOn){'<div class="alert warn">Intune add-on is off - a swap
 function val(id){return document.getElementById(id).value;}
 function esc(s){return (s==null?'':String(s)).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function fd(o){const f=new FormData();for(const k in o)f.append(k,o[k]);return f;}
-function gather(){return {userName:val('userName'),userId:val('userId'),oldDevice:val('oldDevice'),newDevice:val('newDevice')};}
+function gather(){return {userName:val('userName'),userId:val('userId'),oldDevice:val('oldDevice'),newDevice:val('newDevice'),oldPhysical:val('oldPhysical')};}
 function arr(x){return Array.isArray(x)?x:(x?[x]:[]);}
 
 // user typeahead (custom - we need id + display name, not just the typed text)
@@ -96,7 +101,7 @@ async function preview(){
     let h=warnHtml(j.warnings);
     h+='<table><tr><th>Device</th><th>Change</th></tr>';
     h+='<tr><td><b>'+esc(j.newTitle||'(none)')+'</b>'+(j.newFound?'':' <span class="err">(not in inventory)</span>')+'</td><td>Owner &rarr; <b>'+esc(j.user||'')+'</b>; Deployment &rarr; Deployed; Intune &rarr; '+(j.intuneFound?'Intune; primary user will be set':'Not Managed <span class="note">(not in Intune)</span>')+'</td></tr>';
-    if(j.oldTitle){h+='<tr><td><b>'+esc(j.oldTitle)+'</b>'+(j.oldFound?'':' <span class="err">(not in inventory)</span>')+'</td><td>Owner &rarr; (cleared); Deployment &rarr; Needs Image; Computer &rarr; Needs to be Imaged; Intune &rarr; '+(j.oldIntuneFound?'Intune':'Not Managed')+'</td></tr>';}
+    if(j.oldTitle){var oldPrimary=(j.oldIntuneFound&&j.reimageUser)?('; primary user &rarr; <b>'+esc(j.reimageUser)+'</b>'):'';var oldPhys=(j.oldPhysical&&j.oldPhysical.trim())?('; physical &rarr; <b>'+esc(j.oldPhysical.trim())+'</b>'):'';h+='<tr><td><b>'+esc(j.oldTitle)+'</b>'+(j.oldFound?'':' <span class="err">(not in inventory)</span>')+'</td><td>Owner &rarr; (cleared); Deployment &rarr; Needs Image; Computer &rarr; Needs to be Imaged; Intune &rarr; '+(j.oldIntuneFound?'Intune':'Not Managed')+oldPrimary+oldPhys+'</td></tr>';}
     h+='</table>';
     document.getElementById('out').innerHTML=h;
   }catch(e){m.textContent='preview failed: '+e;}

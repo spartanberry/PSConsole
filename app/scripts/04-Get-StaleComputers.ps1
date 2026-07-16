@@ -14,6 +14,10 @@ $domainDN = $rootDse.defaultNamingContext.Value
 $cutoff = (Get-Date).AddDays(-$Days)
 $cutoffFileTime = $cutoff.ToFileTimeUtc()
 
+# Emit a preformatted local string: WinPS 5.1 ConvertTo-Json renders a raw DateTime as
+# "/Date(1333728371000)/", which is what would reach the table, CSV export and emailed reports.
+function Format-Stamp { param($Value) if ($Value) { ([datetime]$Value).ToString('MM/dd/yyyy h:mm tt') } else { '' } }
+
 $ds = New-Object System.DirectoryServices.DirectorySearcher([ADSI]"LDAP://$domainDN")
 $ds.Filter = "(&(objectCategory=computer)(lastLogonTimestamp<=$cutoffFileTime))"
 $ds.PageSize = 1000
@@ -26,8 +30,11 @@ $ds.FindAll() | ForEach-Object {
         Name          = "$($p.name)"
         DNSHostName   = "$($p.dnshostname)"
         OS            = "$($p.operatingsystem)"
-        LastLogon     = $last
+        LastLogon     = Format-Stamp $last
         DaysStale     = if ($last) { [math]::Round(((Get-Date) - $last).TotalDays,0) } else { 'never' }
         DN            = "$($p.distinguishedname)"
     }
-} | Sort-Object LastLogon
+# LastLogon is now a formatted string, so sorting on it would order lexicographically (by month).
+# Sort on DaysStale instead - descending with never-logged-on pinned first reproduces the previous
+# "Sort-Object LastLogon" order exactly (nulls first, then oldest logon first).
+} | Sort-Object @{ Expression = { if ($_.DaysStale -eq 'never') { [double]::MaxValue } else { [double]$_.DaysStale } } } -Descending

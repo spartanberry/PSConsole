@@ -41,6 +41,7 @@ function Get-InventoryAll {
             owner            = [string]$fl.($f.owner)
             deploymentStatus = [string]$fl.($f.deploymentStatus)
             computerStatus   = [string]$fl.($f.computerStatus)
+            physicalStatus   = [string]$fl.($f.physicalStatus)
             intuneStatus     = [string](@($fl.($f.intuneStatus)) -join ', ')
             serial           = [string]$fl.($f.serial)
             model            = [string]$fl.($f.model)
@@ -72,6 +73,65 @@ function Find-InventoryTitles {
     @(Get-InventoryAll | Where-Object { $_.title -like "*$q*" } | Select-Object -First $Max)
 }
 
+# All Intune managed-device NAMES, cached ~5 min (via the READ app). Used by the Create-User Intune
+# typeahead. We pull the full name list once and substring-match in memory (Intune managedDevices $filter
+# doesn't support startswith on deviceName reliably), returning only the top N so the huge device count
+# never reaches the browser - the "just show the first ten" approach.
+$script:IntuneNames = $null
+$script:IntuneNamesAt = [datetime]::MinValue
+function Get-IntuneDeviceNames {
+    param([switch]$Refresh)
+    if (-not $Refresh -and $script:IntuneNames -and (((Get-Date) - $script:IntuneNamesAt).TotalSeconds -lt 300)) { return $script:IntuneNames }
+    $names = New-Object System.Collections.Generic.List[string]
+    $tok = Get-GraphToken
+    $uri = "https://graph.microsoft.com/v1.0/deviceManagement/managedDevices?`$select=deviceName&`$top=200"
+    do {
+        $resp = Invoke-RestMethod -Method GET -Uri $uri -Headers @{ Authorization = "Bearer $tok" } -TimeoutSec 30
+        foreach ($d in $resp.value) { if ($d.deviceName) { $names.Add([string]$d.deviceName) } }
+        $uri = [string]$resp.'@odata.nextLink'
+    } while ($uri)
+    $script:IntuneNames = @($names | Sort-Object -Unique)
+    $script:IntuneNamesAt = Get-Date
+    $script:IntuneNames
+}
+function Find-IntuneDeviceNames {
+    param([string]$Query, [int]$Max = 10)
+    $q = [string]$Query
+    if (-not $q) { return @() }
+    @(Get-IntuneDeviceNames | Where-Object { $_ -like "*$q*" } | Select-Object -First $Max)
+}
+
+# Resolve the "reimage" user (config: reimageUser - a UPN, or a sam/mailNickname like 'zimageuser') to an
+# Entra object id, cached per identifier. Returned devices swapped OUT get this user set as their Intune
+# primary user. $null if not configured or unresolvable (the swap then just skips that step).
+$script:ReimageUserId = $null
+$script:ReimageUserFor = $null
+function Get-ReimageUserId {
+    $ident = [string](Get-InventoryConfig).reimageUser
+    if (-not $ident) { return $null }
+    if ($script:ReimageUserId -and $script:ReimageUserFor -eq $ident) { return $script:ReimageUserId }
+    $hdr = @{ Authorization = "Bearer $(Get-GraphToken)" }
+    $id = $null
+    if ($ident -like '*@*') {
+        try {
+            $r = Invoke-RestMethod -Method GET -Uri "https://graph.microsoft.com/v1.0/users/$([uri]::EscapeDataString($ident))?`$select=id" -Headers $hdr -TimeoutSec 15
+            $id = [string]$r.id
+        } catch {}
+    }
+    if (-not $id) {
+        $esc = $ident -replace "'", "''"
+        foreach ($flt in @("mailNickname eq '$esc'", "startswith(userPrincipalName,'$esc')")) {
+            try {
+                $r = Invoke-RestMethod -Method GET -Uri "https://graph.microsoft.com/v1.0/users?`$filter=$([uri]::EscapeDataString($flt))&`$select=id&`$top=1" -Headers $hdr -TimeoutSec 15
+                $id = [string](@($r.value)[0].id)
+                if ($id) { break }
+            } catch {}
+        }
+    }
+    if ($id) { $script:ReimageUserId = $id; $script:ReimageUserFor = $ident }
+    $id
+}
+
 # --- choice options, status change, and add-computer (single + bulk) --------------------------------
 
 # Choice options for the status columns, read live from the list schema and cached ~10 min so the form
@@ -95,13 +155,15 @@ function Get-InventoryChoices {
 
 # Change an existing device's status (Deployment / Computer) and optional comment.
 function Set-InventoryStatus {
-    param([string]$Title, [string]$Deployment, [string]$Computer, [string]$Comment, [switch]$SetComment)
+    param([string]$Title, [string]$Deployment, [string]$Computer, [string]$Physical, [string]$Comment, [switch]$SetComment)
     $ctx = Get-InventoryContext; $f = $ctx.fields
     $item = Find-InventoryItemByTitle $Title
     if (-not $item) { return @{ ok = $false; error = "'$Title' not found in inventory" } }
     $fields = @{}
     if ($Deployment) { $fields[$f.deploymentStatus] = $Deployment }
     if ($Computer)   { $fields[$f.computerStatus]   = $Computer }
+    # Physical Status is free text (field_1); set it only when something was typed (blank = leave unchanged).
+    if ($Physical -and "$Physical".Trim()) { $fields[$f.physicalStatus] = "$Physical".Trim() }
     if ($SetComment) { $fields[$f.comment] = [string]$Comment }
     if (-not $fields.Count) { return @{ ok = $false; error = 'nothing to change' } }
     try { Set-InventoryFields -ItemId $item.id -Fields $fields | Out-Null; return @{ ok = $true } }
@@ -201,7 +263,7 @@ function Get-IntuneDeviceIdByName {
 
 # Dry run: resolve everything and describe what a swap WOULD do (no writes).
 function Get-SwapPreview {
-    param([string]$UserDisplayName, [string]$OldTitle, [string]$NewTitle)
+    param([string]$UserDisplayName, [string]$OldTitle, [string]$NewTitle, [string]$OldPhysical)
     $ctx = Get-InventoryContext; $f = $ctx.fields
     $newItem = Find-InventoryItemByTitle $NewTitle
     $oldItem = Find-InventoryItemByTitle $OldTitle
@@ -215,6 +277,8 @@ function Get-SwapPreview {
     [pscustomobject]@{
         user = $UserDisplayName; newTitle = $NewTitle; oldTitle = $OldTitle
         newFound = [bool]$newItem; oldFound = [bool]$oldItem; intuneFound = ($md.Count -eq 1); oldIntuneFound = ($mdOld.Count -eq 1)
+        reimageUser = [string](Get-InventoryConfig).reimageUser
+        oldPhysical = [string]$OldPhysical
         newCurrentOwner = if ($newItem) { [string]$newItem.fields.($f.owner) } else { '' }
         oldCurrentOwner = if ($oldItem) { [string]$oldItem.fields.($f.owner) } else { '' }
         warnings = @($warnings)
@@ -224,7 +288,7 @@ function Get-SwapPreview {
 # Execute the swap: new device -> user (inventory + Intune primary), old device -> returned (inventory).
 # Idempotent-ish and best-effort per step; returns per-step status so partials are visible.
 function Invoke-ComputerSwap {
-    param([string]$UserDisplayName, [string]$UserId, [string]$OldTitle, [string]$NewTitle)
+    param([string]$UserDisplayName, [string]$UserId, [string]$OldTitle, [string]$NewTitle, [string]$OldPhysical)
     $ctx = Get-InventoryContext; $f = $ctx.fields
     # SharePoint dateTime columns need ISO 8601; noon UTC so date-only display doesn't roll back a day in US zones.
     $today = (Get-Date).ToString('yyyy-MM-ddT12:00:00Z')
@@ -273,13 +337,17 @@ function Invoke-ComputerSwap {
     #    and Intune Status toggled to match whether it's still a managed device in Intune.
     if ($OldTitle) {
         $oldItem = Find-InventoryItemByTitle $OldTitle
+        $mdOld = @(Get-IntuneDeviceIdByName $OldTitle)
         if ($oldItem) {
             $of = @{}
             $of[$f.owner] = ''; $of[$f.deploymentStatus] = 'Needs Image'; $of[$f.computerStatus] = 'Needs to be Imaged'
-            $oldIntuneVal = if ((@(Get-IntuneDeviceIdByName $OldTitle)).Count -eq 1) { 'Intune' } else { 'Not Managed' }
+            # Physical Status is free text typed by the tech (blank = leave unchanged).
+            if ($OldPhysical -and "$OldPhysical".Trim()) { $of[$f.physicalStatus] = "$OldPhysical".Trim() }
+            $oldIntuneVal = if ($mdOld.Count -eq 1) { 'Intune' } else { 'Not Managed' }
             try {
                 Set-InventoryFields -ItemId $oldItem.id -Fields $of | Out-Null
                 $omsg = 'owner cleared; status -> Needs Image'
+                if ($OldPhysical -and "$OldPhysical".Trim()) { $omsg += "; physical -> $("$OldPhysical".Trim())" }
                 try { Set-InventoryMultiChoice -ItemId $oldItem.id -FieldInternalName $f.intuneStatus -Values @($oldIntuneVal) | Out-Null; $omsg += "; Intune -> $oldIntuneVal" }
                 catch { $omsg += "; (Intune Status not set: $(Get-GraphError $_))" }
                 $steps += @{ step = "Inventory: $OldTitle"; ok = $true; msg = $omsg }
@@ -287,6 +355,19 @@ function Invoke-ComputerSwap {
             catch { $ok = $false; $steps += @{ step = "Inventory: $OldTitle"; ok = $false; msg = (Get-GraphError $_) } }
         }
         else { $ok = $false; $steps += @{ step = "Inventory: $OldTitle"; ok = $false; msg = 'not found in inventory - skipped' } }
+
+        # Old device Intune primary user -> the reimage user (e.g. zimageuser), so the returned machine is
+        # ready to be re-imaged. Only when the old device is a single Intune match and a reimage user is set.
+        if ($mdOld.Count -eq 1) {
+            $reLabel = [string](Get-InventoryConfig).reimageUser
+            $riId = Get-ReimageUserId
+            if ($riId) {
+                $pr = Set-IntuneDevicePrimaryUser -DeviceId ([string]$mdOld[0].id) -UserId $riId
+                if ($pr.ok) { $steps += @{ step = 'Intune primary user (old)'; ok = $true; msg = "set to $reLabel" } }
+                else { $ok = $false; $steps += @{ step = 'Intune primary user (old)'; ok = $false; msg = $pr.error } }
+            }
+            else { $steps += @{ step = 'Intune primary user (old)'; ok = $true; msg = 'no reimage user configured (reimageUser) - skipped' } }
+        }
     }
 
     [pscustomobject]@{ ok = $ok; user = $UserDisplayName; newTitle = $NewTitle; oldTitle = $OldTitle; steps = @($steps) }

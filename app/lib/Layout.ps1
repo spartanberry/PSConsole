@@ -19,6 +19,7 @@ $script:PSCIcons = @{
     reports      = "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><line x1='6' y1='20' x2='6' y2='14'/><line x1='12' y1='20' x2='12' y2='4'/><line x1='18' y1='20' x2='18' y2='10'/></svg>"
     veeam        = "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z'/><polyline points='9 12 11 14 15 10'/></svg>"
     inventory    = "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect x='2' y='3' width='20' height='14' rx='2'/><line x1='8' y1='21' x2='16' y2='21'/><line x1='12' y1='17' x2='12' y2='21'/></svg>"
+    hyperv       = "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect x='2' y='3' width='9' height='7' rx='1'/><rect x='13' y='3' width='9' height='7' rx='1'/><rect x='2' y='14' width='9' height='7' rx='1'/><rect x='13' y='14' width='9' height='7' rx='1'/></svg>"
 }
 
 function Get-AppStyles {
@@ -104,17 +105,23 @@ function Get-LoginHead {
 function Get-AppChrome {
     param([string]$Active, $User, [string]$Title, [string]$Subtitle = '', [bool]$HasLogo = $false)
     $role = [string]$User.role
+    # Nav visibility mirrors RBAC: admin sees everything; helpdesk sees only its config-driven features
+    # (Config > Helpdesk feature access). Compute the helpdesk set ONCE here (one config read) rather than
+    # calling Test-Authorized per item. Add-on tabs also require the add-on to be configured.
+    $isAdmin = ($role -eq 'admin')
+    $hd = if ($isAdmin) { @() } else { @(Get-HelpdeskFeatures) }
     $items = @(
         @{ href='/dashboard';           key='dashboard';    label='Dashboard';     icon=$script:PSCIcons.dashboard;    show=$true }
-        @{ href='/';                    key='run';          label='Run Scripts';   icon=$script:PSCIcons.run;          show=$true }
-        @{ href='/users/new';           key='create';       label='Create User';   icon=$script:PSCIcons.create;       show=$true }
-        @{ href='/users/onboarding';    key='onboarding';   label='Onboarding';    icon=$script:PSCIcons.onboarding;   show=$true }
-        @{ href='/users/decommission';  key='decommission'; label='Decommission';  icon=$script:PSCIcons.decommission; show=$true }
-        @{ href='/admin/reports';       key='reports';      label='Reports';       icon=$script:PSCIcons.reports;      show=$true }
-        @{ href='/admin/veeam';         key='veeam';        label='Veeam';         icon=$script:PSCIcons.veeam;        show=(($role -eq 'admin') -and (Test-VeeamConfigured)) }
-        @{ href='/inventory';           key='inventory';    label='Inventory';     icon=$script:PSCIcons.inventory;    show=(($role -eq 'admin') -and (Test-InventoryConfigured)) }
-        @{ href='/admin/config';        key='config';       label='Config';        icon=$script:PSCIcons.config;       show=($role -eq 'admin') }
-        @{ href='/?view=audit';         key='audit';        label='Audit';         icon=$script:PSCIcons.audit;        show=($role -eq 'admin') }
+        @{ href='/';                    key='run';          label='Run Scripts';   icon=$script:PSCIcons.run;          show=($isAdmin -or ($hd -contains 'run')) }
+        @{ href='/users/new';           key='create';       label='Create User';   icon=$script:PSCIcons.create;       show=($isAdmin -or ($hd -contains 'create-user')) }
+        @{ href='/users/onboarding';    key='onboarding';   label='Onboarding';    icon=$script:PSCIcons.onboarding;   show=($isAdmin -or ($hd -contains 'create-user')) }
+        @{ href='/users/decommission';  key='decommission'; label='Decommission';  icon=$script:PSCIcons.decommission; show=($isAdmin -or ($hd -contains 'decommission-user')) }
+        @{ href='/admin/reports';       key='reports';      label='Reports';       icon=$script:PSCIcons.reports;      show=($isAdmin -or ($hd -contains 'manage-reports')) }
+        @{ href='/admin/veeam';         key='veeam';        label='Veeam';         icon=$script:PSCIcons.veeam;        show=(($isAdmin -or ($hd -contains 'veeam-reports')) -and (Test-VeeamConfigured)) }
+        @{ href='/admin/hyperv';        key='hyperv';       label='Hyper-V';       icon=$script:PSCIcons.hyperv;       show=(($isAdmin -or ($hd -contains 'hyperv-view')) -and (Test-HyperVConfigured)) }
+        @{ href='/inventory';           key='inventory';    label='Inventory';     icon=$script:PSCIcons.inventory;    show=(($isAdmin -or ($hd -contains 'inventory')) -and (Test-InventoryConfigured)) }
+        @{ href='/admin/config';        key='config';       label='Config';        icon=$script:PSCIcons.config;       show=$isAdmin }
+        @{ href='/audit';               key='audit';        label='Audit';         icon=$script:PSCIcons.audit;        show=$isAdmin }
     )
     $nav = ($items | Where-Object { $_.show } | ForEach-Object {
         $cls = if ($_.key -eq $Active) { 'nav-item active' } else { 'nav-item' }

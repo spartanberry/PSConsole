@@ -14,12 +14,13 @@ $(if($data.err){"<div class=`"alert err`">$(ConvertTo-PSCEncoded $data.err)</div
     <input type="text" name="q" value="$(ConvertTo-PSCEncoded $data.q)" placeholder="Search by computer name..." style="max-width:280px" autofocus>
     <button type="submit">Search</button>
     $(if($data.q){"<a class=`"btn secondary`" href=`"/inventory`">Clear</a>"})
-    <span class="note" style="margin-left:auto">$(@($data.items).Count) shown</span>
+    <span class="note" style="margin-left:auto" id="shownCount">$(@($data.items).Count) shown</span>
   </form>
 
-  <table>
-    <tr><th>Computer</th><th>Owner</th><th>Deployment status</th><th>Computer status</th><th>Intune</th><th>Model</th><th>Serial</th><th>Date issued</th><th>Warranty</th></tr>
-    $(if(@($data.items).Count -eq 0){'<tr><td colspan="9" class="note">No matching inventory items.</td></tr>'})
+  <div style="overflow-x:auto">
+  <table id="invTable">
+    <tr><th>Computer</th><th>Owner</th><th>Deployment status</th><th>Computer status</th><th>Physical status</th><th>Intune</th><th>Model</th><th>Serial</th><th>Date issued</th><th>Warranty</th></tr>
+    $(if(@($data.items).Count -eq 0){'<tr><td colspan="10" class="note">No matching inventory items.</td></tr>'})
     $(foreach($it in @($data.items)){
       $di = ([string]$it.dateIssued) -replace '[T ].*$',''
       $wr = ([string]$it.warranty) -replace '[T ].*$',''
@@ -27,6 +28,7 @@ $(if($data.err){"<div class=`"alert err`">$(ConvertTo-PSCEncoded $data.err)</div
       "<td>$(ConvertTo-PSCEncoded $it.owner)</td>" +
       "<td>$(ConvertTo-PSCEncoded $it.deploymentStatus)</td>" +
       "<td>$(ConvertTo-PSCEncoded $it.computerStatus)</td>" +
+      "<td>$(ConvertTo-PSCEncoded $it.physicalStatus)</td>" +
       "<td>$(ConvertTo-PSCEncoded $it.intuneStatus)</td>" +
       "<td>$(ConvertTo-PSCEncoded $it.model)</td>" +
       "<td class=`"note`">$(ConvertTo-PSCEncoded $it.serial)</td>" +
@@ -34,7 +36,107 @@ $(if($data.err){"<div class=`"alert err`">$(ConvertTo-PSCEncoded $data.err)</div
       "<td class=`"note`">$(ConvertTo-PSCEncoded $wr)</td></tr>"
     })
   </table>
-  <p class="note" style="margin-top:10px">Read-only view. Use <b>Computer swap</b> above to reassign a device (updates owner + status here and the Intune primary user together).</p>
+  </div>
+  <p class="note" style="margin-top:10px">Read-only view. Filter by value (or a From/To date range) under a column heading; filters combine across columns. Use <b>Computer swap</b> above to reassign a device (updates owner + status here and the Intune primary user together).</p>
 </div>
+
+<style>
+.filterRow th{vertical-align:top}
+.filterRow select{width:100%;font-size:12px;font-weight:normal}
+.msf{position:relative}
+.msf-btn{width:100%;font-size:12px;font-weight:normal;text-align:left;padding:3px 22px 3px 6px;cursor:pointer;background:var(--panel);border:1px solid var(--border);border-radius:6px;position:relative}
+.msf-btn:after{content:'\25BE';position:absolute;right:7px;top:50%;transform:translateY(-50%);font-size:10px;color:var(--muted)}
+.msf-panel{display:none;position:fixed;z-index:1000;min-width:170px;max-height:240px;overflow:auto;background:var(--panel);border:1px solid var(--border);border-radius:6px;box-shadow:var(--shadow);padding:4px}
+.msf-opt{display:flex;align-items:center;gap:6px;padding:3px 6px;font-weight:normal;white-space:nowrap;cursor:pointer}
+.msf-opt:hover{background:var(--hover)}
+.msf-opt input{width:auto}
+</style>
+<script>
+// Per-column header filters (client-side over the rendered rows). Deployment/Computer status + Model get a
+// MULTI-select checkbox dropdown (OR within the column); Physical status + Intune get a single-select; the
+// two date columns get a labelled From/To range; high-cardinality free-text columns (Computer, Owner,
+// Serial) get NO filter. Columns still AND together.
+(function(){
+  var table=document.getElementById('invTable');
+  if(!table||!table.rows.length) return;
+  var ncol=table.rows[0].cells.length;
+  var dataRows=Array.prototype.slice.call(table.rows,1).filter(function(r){return r.cells.length===ncol;});
+  var total=dataRows.length;
+  var noFilter={0:1,1:1,7:1};           // Computer, Owner, Serial
+  var dateCols={8:1,9:1};               // Date issued, Warranty
+  var multiCols={2:1,3:1,6:1};          // Deployment status, Computer status, Model
+  var frow=table.insertRow(1); frow.className='filterRow';
+  var ctrls=[];                          // per column: null|{kind:'select',el}|{kind:'multi',sel}|{kind:'date',from,to}
+  var panels=[];
+  var countEl=document.getElementById('shownCount');
+  function cellDate(txt){ var m=/^\d{4}-\d{2}-\d{2}/.exec(txt.trim()); return m?m[0]:''; }
+  function closePanels(){ for(var p=0;p<panels.length;p++) panels[p].style.display='none'; }
+  document.addEventListener('click',closePanels);
+  window.addEventListener('resize',closePanels);
+  document.addEventListener('scroll',closePanels,true);
+  function distinct(i){ var seen={},vals=[]; for(var r=0;r<dataRows.length;r++){var t=dataRows[r].cells[i].textContent.trim(); if(t&&!seen[t]){seen[t]=1;vals.push(t);}} vals.sort(function(a,b){return a.localeCompare(b);}); return vals; }
+  function applyFilters(){
+    var shown=0;
+    for(var r=0;r<dataRows.length;r++){
+      var vis=true;
+      for(var i=0;i<ncol;i++){
+        var ct=ctrls[i]; if(!ct) continue;
+        var cell=dataRows[r].cells[i].textContent.trim();
+        if(ct.kind==='select'){ if(ct.el.value && cell!==ct.el.value){vis=false;break;} }
+        else if(ct.kind==='multi'){ var s=ct.sel(); if(s.length && s.indexOf(cell)<0){vis=false;break;} }
+        else { var f=ct.from.value,t=ct.to.value; if(!f&&!t) continue; var d=cellDate(cell); if(!d||(f&&d<f)||(t&&d>t)){vis=false;break;} }
+      }
+      dataRows[r].style.display=vis?'':'none'; if(vis)shown++;
+    }
+    if(countEl)countEl.textContent=shown+' of '+total+' shown';
+  }
+  function dateField(lbl){
+    // Label ABOVE the input (not beside it) so the native date picker keeps its full width - an inline
+    // label squeezed the field and clipped the year. min-width guarantees MM/DD/YYYY is never cut off.
+    var row=document.createElement('div'); row.style.display='flex'; row.style.flexDirection='column';
+    var s=document.createElement('span'); s.textContent=lbl; s.style.fontSize='10px'; s.style.fontWeight='normal'; s.style.color='var(--muted)';
+    var inp=document.createElement('input'); inp.type='date'; inp.style.fontSize='11px'; inp.style.minWidth='118px'; inp.style.width='100%'; inp.style.boxSizing='border-box';
+    inp.addEventListener('change',applyFilters);
+    row.appendChild(s); row.appendChild(inp); return {row:row,inp:inp};
+  }
+  for(var i=0;i<ncol;i++){
+    var th=document.createElement('th');
+    if(noFilter[i]){ ctrls.push(null); frow.appendChild(th); continue; }
+    if(dateCols[i]){
+      var wrap=document.createElement('div'); wrap.style.display='flex'; wrap.style.flexDirection='column'; wrap.style.gap='3px';
+      var fF=dateField('From'), tF=dateField('To');
+      wrap.appendChild(fF.row); wrap.appendChild(tF.row); th.appendChild(wrap);
+      ctrls.push({kind:'date',from:fF.inp,to:tF.inp}); frow.appendChild(th); continue;
+    }
+    if(multiCols[i]){
+      var mwrap=document.createElement('div'); mwrap.className='msf';
+      var btn=document.createElement('button'); btn.type='button'; btn.className='msf-btn'; btn.textContent='All';
+      var panel=document.createElement('div'); panel.className='msf-panel';
+      panel.addEventListener('click',function(e){e.stopPropagation();});
+      var boxes=[];
+      distinct(i).forEach(function(v){
+        var lab=document.createElement('label'); lab.className='msf-opt';
+        var cb=document.createElement('input'); cb.type='checkbox'; cb.value=v;
+        lab.appendChild(cb); lab.appendChild(document.createTextNode(' '+v));
+        panel.appendChild(lab); boxes.push(cb);
+      });
+      document.body.appendChild(panel); panels.push(panel);
+      (function(btn,boxes,panel){
+        function upd(){ var n=0; for(var b=0;b<boxes.length;b++) if(boxes[b].checked) n++; btn.textContent=n?(n+' selected'):'All'; }
+        for(var b=0;b<boxes.length;b++) boxes[b].addEventListener('change',function(){upd();applyFilters();});
+        btn.addEventListener('click',function(e){ e.stopPropagation(); var open=panel.style.display==='block'; closePanels(); if(!open){ var rc=btn.getBoundingClientRect(); panel.style.left=rc.left+'px'; panel.style.top=(rc.bottom+2)+'px'; panel.style.display='block'; } });
+      })(btn,boxes,panel);
+      mwrap.appendChild(btn); th.appendChild(mwrap);
+      ctrls.push({kind:'multi', sel:(function(boxes){return function(){var out=[];for(var b=0;b<boxes.length;b++) if(boxes[b].checked) out.push(boxes[b].value); return out;};})(boxes)});
+      frow.appendChild(th); continue;
+    }
+    var sel=document.createElement('select');
+    var oAll=document.createElement('option'); oAll.value=''; oAll.textContent='All'; sel.appendChild(oAll);
+    distinct(i).forEach(function(v){ var o=document.createElement('option'); o.value=v; o.textContent=v; sel.appendChild(o); });
+    sel.addEventListener('change',applyFilters);
+    th.appendChild(sel); ctrls.push({kind:'select',el:sel}); frow.appendChild(th);
+  }
+})();
+</script>
 
 $($data.close)
