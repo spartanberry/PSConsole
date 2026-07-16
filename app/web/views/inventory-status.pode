@@ -21,6 +21,11 @@ $($data.open)
       <label>Computer status</label>
       <select id="computer"><option value="">(leave unchanged)</option>$(foreach($o in @($data.computerChoices)){"<option>$(ConvertTo-PSCEncoded $o)</option>"})</select>
     </div>
+    <div>
+      <label>Physical status <span class="note">- type it in</span></label>
+      <input id="physical" autocomplete="off" placeholder="e.g. Good, cracked screen, missing keys">
+    </div>
+    <div></div>
   </div>
   <label>Comment <span class="note">- optional</span></label>
   <input id="comment" placeholder="e.g. cracked screen, RMA #12345">
@@ -41,12 +46,12 @@ let t;document.getElementById('device').addEventListener('input',function(){
     document.getElementById('devList').innerHTML=arr(j.items).map(x=>'<option value="'+esc(x.title)+'">'+esc(x.owner||'')+'</option>').join('');}catch(e){}},250);
 });
 async function apply(){
-  const dev=val('device').trim();const dep=val('deployment');const comp=val('computer');
+  const dev=val('device').trim();const dep=val('deployment');const comp=val('computer');const phys=val('physical').trim();
   if(!dev){alert('Enter a computer.');return;}
-  if(!dep&&!comp&&!val('comment').trim()){alert('Pick a status (or add a comment) to change.');return;}
+  if(!dep&&!comp&&!phys&&!val('comment').trim()){alert('Pick a status, physical status, or comment to change.');return;}
   const m=document.getElementById('msg');m.textContent='applying...';
   try{
-    const r=await fetch('/inventory/status/apply',{method:'POST',body:fd({device:dev,deployment:dep,computer:comp,comment:val('comment')})});
+    const r=await fetch('/inventory/status/apply',{method:'POST',body:fd({device:dev,deployment:dep,computer:comp,physical:phys,comment:val('comment')})});
     const j=await r.json();
     m.innerHTML=j.ok?'<span class="ok">Updated '+esc(dev)+'.</span>':'<span class="err">Failed: '+esc(j.error||'unknown')+'</span>';
   }catch(e){m.textContent='failed: '+e;}

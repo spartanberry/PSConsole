@@ -118,15 +118,57 @@ function Invoke-Authenticate([string]$Username, [string]$Password) {
     @{ ok=$false }
 }
 
+# The set of features an admin can grant/revoke for the helpdesk role (rendered as checkboxes in Config).
+# configure, view-history (Audit), and upload are deliberately NOT here - they are permanently admin-only.
+# Onboarding rides on 'create-user'. Order is the display order on the Config page.
+function Get-HelpdeskFeatureCatalog {
+    @(
+        [pscustomobject]@{ action = 'run';               label = 'Run Scripts' }
+        [pscustomobject]@{ action = 'create-user';       label = 'Create User / Onboarding' }
+        [pscustomobject]@{ action = 'decommission-user'; label = 'Decommission User' }
+        [pscustomobject]@{ action = 'manage-reports';    label = 'Scheduled Reports' }
+        [pscustomobject]@{ action = 'inventory';         label = 'Computer Inventory' }
+        [pscustomobject]@{ action = 'veeam-reports';     label = 'Veeam Reports' }
+        [pscustomobject]@{ action = 'unifi';             label = 'UniFi Network Scripts' }
+        [pscustomobject]@{ action = 'hyperv-view';       label = 'Hyper-V (view)' }
+        # Deliberately separate from hyperv-view so read-only visibility can be granted without it.
+        # Note this toggle is NOT the only gate: a migration runs as the OPERATOR'S OWN credentials, so
+        # granting this to someone without cluster rights still fails at authentication - it moves no VM.
+        # It also does nothing at all unless "migrationEnabled": true in data\hyperv.config.json.
+        [pscustomobject]@{ action = 'hyperv-migrate';    label = 'Hyper-V VM migration' }
+        # Read is 'hyperv-view'; this is the WRITE that deletes a checkpoint (Remove-VMSnapshot). Separate
+        # from migration so checkpoint cleanup and VM migration can be delegated independently. Like all
+        # write actions it runs as the operator's OWN credentials, so granting it to someone without
+        # Hyper-V rights still fails at authentication.
+        [pscustomobject]@{ action = 'hyperv-checkpoint-remove'; label = 'Hyper-V checkpoint removal' }
+    )
+}
+# Legacy default when config has no explicit helpdeskFeatures list (fresh/upgraded installs) - preserves
+# the historical helpdesk grant so an upgrade never silently changes access.
+$script:HelpdeskDefaultFeatures = @('run', 'create-user', 'decommission-user', 'manage-reports')
+
+# The helpdesk-enabled features from config, clamped to the toggleable catalog. Absent config -> default.
+function Get-HelpdeskFeatures {
+    $valid = @(Get-HelpdeskFeatureCatalog | ForEach-Object { $_.action })
+    $cfg = Get-Store config
+    $set = $null
+    if ($cfg -and ($cfg.PSObject.Properties.Name -contains 'helpdeskFeatures')) { $set = $cfg.helpdeskFeatures }
+    if ($null -eq $set) { $set = $script:HelpdeskDefaultFeatures }
+    @(@($set) | Where-Object { $_ -in $valid })
+}
+
 function Test-Authorized([string]$Role, [string]$Action) {
-    # actions: run, view-history, upload, configure, create-user, decommission-user, onboarding-run,
-    #          manage-reports, veeam-reports, inventory (all but the helpdesk list below are admin-only
-    #          via default-deny; 'inventory' stays admin-only until the swap feature is verified)
+    # actions: run, view-history, upload, configure, create-user, decommission-user, manage-reports,
+    #          veeam-reports, inventory, unifi, hyperv-view, hyperv-migrate, hyperv-checkpoint-remove.
+    #          Admin allows all. Helpdesk is
+    #          CONFIG-DRIVEN via the toggleable catalog above (Config > Helpdesk feature access);
+    #          configure/view-history/upload never apply.
     switch ($Role) {
         'admin'    { return $true }
-        # Helpdesk: run scripts, create + onboard + decommission users, manage their OWN scheduled reports,
-        # and the overview dashboard. Deliberately NO 'view-history' (Audit) and NO 'configure' (Config).
-        'helpdesk' { return ($Action -in @('run','create-user','decommission-user','manage-reports')) }
+        'helpdesk' {
+            if ($Action -in @('configure', 'view-history', 'upload')) { return $false }
+            return ($Action -in (Get-HelpdeskFeatures))
+        }
         default    { return $false }
     }
 }

@@ -2,6 +2,66 @@
 
 All notable changes to PSConsole. Versions follow the `VERSION` file.
 
+## [1.14.0] - 2026-07-16
+
+### Added
+- **Hyper-V add-on (admin).** A new **Hyper-V** tab shows failover-cluster nodes, roles needing attention,
+  and every VM with live usage (vCPU, CPU %, memory pressure) — read **without** giving the console
+  service account any VM control. VM list / state / owner come from the cluster (`root\MSCluster`, a
+  read-only cluster role) and usage from performance counters (`Performance Monitor Users`); the service
+  account is never made a Hyper-V Administrator. One-time per-host grant helper
+  `graph-setup\Set-HyperVReadAccess.ps1`. Three matching Run-page scripts (Hyper-V category): VMs, cluster
+  nodes, cluster roles. Configured via `data\hyperv.config.json`; ships dormant.
+  - **VM migration** — move a clustered VM between nodes from the console. Runs under the **operator's own
+    AD credentials** entered per request (the service account stays read-only), validates the VM and
+    target node against the live cluster, requires a confirmation, and audits the operator's **username**
+    only — never the password. Gated behind `migrationEnabled` in `data\hyperv.config.json`.
+  - **Checkpoints** — list every VM's checkpoints (name, age, differencing-disk size, type) on demand,
+    again under your own credentials, since checkpoint data needs Hyper-V rights the read-only service
+    account deliberately lacks.
+  - **Checkpoint removal** — delete a checkpoint under your own credentials, targeted by its GUID with a
+    confirmation gate.
+  - Three independent helpdesk-grantable permissions: **Hyper-V (view)**, **Hyper-V VM migration**, and
+    **Hyper-V checkpoint removal**.
+- **UniFi Network add-on (admin).** Read-only UniFi OS integration surfaced as Run-page scripts across
+  multiple consoles: device inventory with firmware-update flags, client inventory, WAN/uptime health,
+  active alarms, daily WAN traffic, top talkers, and a **UniFi ↔ Intune** client cross-reference (shadow /
+  non-enrolled devices). Per-console API keys (DPAPI-encrypted); setup via `unifi-setup\Set-UnifiConfig.ps1`.
+  Ships dormant.
+- **Expirations hub (admin).** `40-Get-ExpiringCredentials.ps1` consolidates the credentials that silently
+  break integrations when they lapse — Entra app-registration secrets and certificates, and Intune APNs /
+  VPP / ADE (DEP) tokens — into one soonest-first view with a configurable window. Reads expiry **metadata
+  only**, never secret values.
+- **Teams notifications (optional).** A reusable Teams channel (Power Automate *Workflows* / incoming
+  webhook) with named per-feature targets. Opt-in lifecycle-event cards (user created / onboarding /
+  decommission) alongside the existing email, a Veeam failed/warning alert card, and a **weekly expiration
+  digest**. Setup via `graph-setup\Set-TeamsConfig.ps1`; per-event and digest settings in Config.
+- **AD Hygiene Run scripts.** Five new scripts (AD Hygiene category): stale users, empty groups, password
+  hygiene, disabled accounts still in groups, and privileged-group membership.
+- **Run-page navigation.** A category selector plus a live filter box on the Run page, so the (now much
+  longer) script list is quick to navigate.
+- **Developer guide.** New `docs\DEVELOPER-GUIDE.md` — the execution-context model, the restart matrix, and
+  step-by-step recipes for adding a page, a script, a helpdesk toggle, an add-on, or a credentialed write
+  action, plus the Windows PowerShell 5.1 traps that have bitten.
+
+### Changed
+- **Audit log rotation.** `data\audit.jsonl` now size-rotates into `data\audit-archive\` (default 5 MB) with
+  configurable retention (default 2 years; `0` = keep forever), so the Audit page's date-range search stays
+  fast as history grows. New **Audit log** card in Config; defaults apply with no config edit.
+- **Helpdesk access is fully config-driven.** Every non-admin-only feature — now including the three
+  Hyper-V permissions, UniFi, inventory and Veeam — is grantable per-feature under **Config → Helpdesk
+  feature access**. `HANDOFF.md` updated; nav, route, and Run-page script visibility documented as three
+  separate gates.
+- **Config** now shows the Hyper-V migration master-switch state read-only (it stays a file-only flag, so
+  enabling live VM migration takes filesystem access to the server, not a click in a browser).
+
+### Fixed
+- **Dashboard "Open full audit" link** navigated to Run Scripts; it now opens the Audit page.
+- **Date columns render as real local timestamps** across the on-prem Run scripts. Windows PowerShell 5.1's
+  `ConvertTo-Json` emits dates as `/Date(ms)/`, and ADSI `whenCreated` / `whenChanged` are UTC but untagged;
+  the scripts now format local date strings at the source (fixing the on-screen table, the CSV export, and
+  the emailed report at once) and sort on the real date rather than the formatted string.
+
 ## [1.13.0] - 2026-07-12
 
 ### Added
@@ -435,7 +495,7 @@ hardens directory login. No breaking changes to existing script-running/RBAC beh
   cases ("already a member", "already licensed") are recognized and real errors are legible.
 - **`Set-Store` couldn't persist empty arrays** (`@() | ConvertTo-Json` -> nothing -> failed
   Move-Item); now writes `[]`.
-- Corrected the Clerical mapping group name `Portland Staff` -> `Portland Office`.
+- Corrected the Clerical mapping group name `Site3 Staff` -> `Site3 Office`.
 - Removed the obsolete read-only "New User" runbook (replaced by the automated workflow).
 
 ### Configuration / operational notes

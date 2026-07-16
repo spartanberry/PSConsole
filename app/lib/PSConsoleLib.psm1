@@ -11,7 +11,10 @@
 . $PSScriptRoot\Decommission.ps1
 . $PSScriptRoot\Notify.ps1
 . $PSScriptRoot\Reports.ps1
+. $PSScriptRoot\Alerts.ps1
 . $PSScriptRoot\Veeam.ps1
 . $PSScriptRoot\SharePoint.ps1
 . $PSScriptRoot\Inventory.ps1
+. $PSScriptRoot\Unifi.ps1
+. $PSScriptRoot\HyperV.ps1
 . $PSScriptRoot\Catalog.ps1

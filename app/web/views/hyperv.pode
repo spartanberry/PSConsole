@@ -1,0 +1,109 @@
+$($data.head)
+$($data.open)
+
+$(if (-not $data.configured) {
+"<div class='card'><h3>Hyper-V add-on not configured</h3><p class='note'>Create <code>data\hyperv.config.json</code> with the Hyper-V hosts and (optionally) the cluster name, then reload. The service account also needs read access on each host - run <code>graph-setup\Set-HyperVReadAccess.ps1</code> there.</p></div>"
+} else {
+$data.bodyHtml
+})
+
+<script>
+async function hvMigrate(btn){
+ var st=document.getElementById('mvStatus');
+ var vm=document.getElementById('mvVm').value, target=document.getElementById('mvTarget').value;
+ var pass=document.getElementById('mvPass');
+ if(!document.getElementById('mvConfirm').checked){ st.style.color='var(--err)'; st.textContent='Tick the confirmation box first.'; return; }
+ var fd=new FormData();
+ fd.append('vm',vm); fd.append('target',target);
+ fd.append('type',document.getElementById('mvType').value);
+ fd.append('opUser',document.getElementById('mvUser').value);
+ fd.append('opPassword',pass.value);
+ fd.append('confirm','true');
+ btn.disabled=true; st.style.color='var(--muted)'; st.textContent='Migrating '+vm+' to '+target+' ...';
+ try{
+  var r=await fetch('/admin/hyperv/migrate',{method:'POST',body:fd});
+  var j=await r.json();
+  btn.disabled=false;
+  // Clear the password as soon as it has been sent - never leave it sitting in the DOM.
+  pass.value='';
+  if(!j.ok){ st.style.color='var(--err)'; st.textContent='Failed: '+(j.error||'unknown'); return; }
+  if(j.preview){ st.style.color='var(--muted)'; st.textContent=j.message; return; }
+  st.style.color='var(--ok-fg)';
+  st.textContent=vm+' now on '+j.owner+' ('+j.state+'). Reloading...';
+  setTimeout(function(){ location.reload(); },1500);
+ }catch(e){ btn.disabled=false; pass.value=''; st.style.color='var(--err)'; st.textContent='Failed: '+e; }
+}
+
+function hvEsc(s){ var d=document.createElement('div'); d.textContent=(s==null?'':String(s)); return d.innerHTML; }
+function hvSize(b,known){
+ if(known===false) return '<span class="note">n/a</span>';
+ b=Number(b)||0; if(b<1024) return b+' B';
+ var u=['KB','MB','GB','TB'], i=-1;
+ do{ b/=1024; i++; }while(b>=1024 && i<u.length-1);
+ return b.toFixed(1)+' '+u[i];
+}
+async function hvCheckpoints(btn){
+ var st=document.getElementById('cpStatus'), res=document.getElementById('cpResults');
+ var pass=document.getElementById('cpPass'), user=document.getElementById('cpUser').value;
+ if(!user || !pass.value){ st.style.color='var(--err)'; st.textContent='Enter your AD username and password.'; return; }
+ var fd=new FormData(); fd.append('opUser',user); fd.append('opPassword',pass.value);
+ btn.disabled=true; st.style.color='var(--muted)'; st.textContent='Reading checkpoints ...';
+ try{
+  var r=await fetch('/admin/hyperv/checkpoints',{method:'POST',body:fd});
+  var j=await r.json();
+  btn.disabled=false;
+  // Clear the password as soon as it has been sent - never leave it sitting in the DOM.
+  pass.value='';
+  if(!j.ok){ st.style.color='var(--err)'; st.textContent='Failed: '+(j.error||'unknown'); res.innerHTML=''; return; }
+  var cps=j.checkpoints||[];
+  if(!cps.length){ st.style.color='var(--ok-fg)'; st.textContent='No checkpoints found on any VM.'; res.innerHTML=''; return; }
+  st.style.color='var(--muted)';
+  st.textContent=cps.length+' checkpoint'+(cps.length===1?'':'s')+(j.error?' (partial: '+j.error+')':'');
+  // Stash the list so Remove buttons can reference a row by index - VM/checkpoint names never go into
+  // an HTML attribute, so a crafted name can't break out. Removal targets the stable GUID (c.Id).
+  window.hvCps=cps;
+  var canRemove=!!j.canRemove;
+  var rows=cps.map(function(c,idx){
+    // Flag checkpoints older than a week - the usual reason to be looking at this list at all.
+    var ageCell = (Number(c.AgeDays)>=7)
+      ? "<td style='color:var(--warn,#b8860b);font-weight:600'>"+hvEsc(c.AgeDays)+"</td>"
+      : "<td>"+hvEsc(c.AgeDays)+"</td>";
+    var actCell = canRemove ? "<td><button style='padding:2px 10px' onclick='hvRemoveCheckpoint("+idx+")'>Remove</button></td>" : "";
+    return "<tr><td>"+hvEsc(c.VM)+"</td><td>"+hvEsc(c.Name)+"</td><td>"+hvEsc(c.Created)+"</td>"+
+           ageCell+"<td>"+hvSize(c.SizeBytes,c.SizeKnown)+"</td><td>"+hvEsc(c.Type)+"</td>"+actCell+"</tr>";
+  }).join('');
+  var actHead = canRemove ? "<th></th>" : "";
+  res.innerHTML="<div style='overflow-x:auto'><table>"+
+    "<tr><th>VM</th><th>Checkpoint</th><th>Created</th><th>Age (days)</th><th>Size</th><th>Type</th>"+actHead+"</tr>"+
+    rows+"</table></div>"+
+    "<p class='note' style='margin-top:8px'>Size is the checkpoint's differencing-disk footprint (best effort); chained checkpoints share ancestry, so it is a directional figure, not exact reclaimable space."+
+    (canRemove?" To remove a checkpoint, re-enter your password (it is cleared after each action) and click Remove.":"")+"</p>";
+ }catch(e){ btn.disabled=false; pass.value=''; st.style.color='var(--err)'; st.textContent='Failed: '+e; }
+}
+
+async function hvRemoveCheckpoint(idx){
+ var c=(window.hvCps||[])[idx]; if(!c) return;
+ var st=document.getElementById('cpStatus'), res=document.getElementById('cpResults');
+ var pass=document.getElementById('cpPass'), user=document.getElementById('cpUser').value;
+ if(!user){ st.style.color='var(--err)'; st.textContent='Enter your AD username first.'; return; }
+ if(!pass.value){ st.style.color='var(--err)'; st.textContent='Re-enter your AD password (it was cleared after listing), then click Remove again.'; return; }
+ if(!confirm("Remove checkpoint '"+c.Name+"' on VM '"+c.VM+"' (age "+c.AgeDays+" days)?\n\nThis deletes the restore point and merges its disk forward. It cannot be undone.")) return;
+ var fd=new FormData();
+ fd.append('opUser',user); fd.append('opPassword',pass.value);
+ fd.append('vm',c.VM); fd.append('id',c.Id); fd.append('confirm','true');
+ st.style.color='var(--muted)'; st.textContent="Removing '"+c.Name+"' on "+c.VM+" ...";
+ try{
+  var r=await fetch('/admin/hyperv/checkpoints/remove',{method:'POST',body:fd});
+  var j=await r.json();
+  // Clear the password as soon as it has been sent - never leave it sitting in the DOM.
+  pass.value='';
+  if(!j.ok){ st.style.color='var(--err)'; st.textContent='Failed: '+(j.error||'unknown'); return; }
+  st.style.color='var(--ok-fg)';
+  st.textContent="Removed '"+c.Name+"' on "+c.VM+". Re-enter your password and click List checkpoints to refresh.";
+  // The on-screen list is now stale and we can't re-list without the password - clear it so no removed row lingers.
+  res.innerHTML='';
+ }catch(e){ pass.value=''; st.style.color='var(--err)'; st.textContent='Failed: '+e; }
+}
+</script>
+
+$($data.close)

@@ -144,7 +144,7 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
     <tr><th>When</th><th>User</th><th>Action</th><th>Target</th><th>Status</th></tr>
     $recentRows
   </table></div>
-  <div class="note" style="margin-top:10px"><a href="/?view=audit">Open full audit &rarr;</a></div>
+  <div class="note" style="margin-top:10px"><a href="/audit">Open full audit &rarr;</a></div>
 </div>
 "@
         }
@@ -334,8 +334,10 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
         # Enforce the script's own gates server-side (not just hidden in the UI): admin-only scripts stay
         # admin-only, and Intune scripts refuse to run unless the add-on is enabled.
         $meta = Get-ScriptMeta $path
-        if ($u.role -ne 'admin' -and $meta.Role -ne 'HelpDesk') { Set-PodeResponseStatus -Code 403; return }
+        $hd = if ($u.role -eq 'admin') { @() } else { @(Get-HelpdeskFeatures) }
+        if (-not (Test-RoleSeesScript $meta $u.role $hd)) { Set-PodeResponseStatus -Code 403; return }
         if ($meta.Category -eq 'Intune' -and -not (Test-IntuneConfigured)) { Set-PodeResponseStatus -Code 403; return }
+        if ($meta.Category -eq 'UniFi'  -and -not (Test-UnifiConfigured))  { Set-PodeResponseStatus -Code 403; return }
         $params = @{}
         foreach ($k in $WebEvent.Data.Keys) { if ($k -like 'p_*') { $params[$k.Substring(2)] = $WebEvent.Data[$k] } }
         $sw = [Diagnostics.Stopwatch]::StartNew()
@@ -381,7 +383,64 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
         if (-not (Require 'configure' $WebEvent)) { return }
         $cfg = Get-Store config
         $chrome = Get-AppChrome -Active 'config' -User $WebEvent.Session.Data.user -Title 'Config' -Subtitle 'Directory auth, branding, provisioning' -HasLogo ([bool]$cfg.logoFile)
-        Write-PodeViewResponse -Path 'config' -Data @{ cfg=$cfg; user=$WebEvent.Session.Data.user; head=$chrome.head; open=$chrome.open; close=$chrome.close }
+        Write-PodeViewResponse -Path 'config' -Data @{ cfg=$cfg; user=$WebEvent.Session.Data.user
+            hdCatalog=@(Get-HelpdeskFeatureCatalog); hdEnabled=@(Get-HelpdeskFeatures)
+            hypervOn=(Test-HyperVConfigured)
+            hypervMigPill=$(if (Test-HyperVMigrationEnabled) {
+                "<span class='pill s-complete'>Enabled</span> &mdash; migrations run for real."
+            } else {
+                "<span class='pill s-pending-sync'>Preview only</span> &mdash; submitting previews and audits intent, but moves nothing."
+            })
+            expAlert=(Get-ExpirationAlertSettings); teamsConfigured=(Test-TeamsConfigured); smtpConfigured=(Test-SmtpConfigured)
+            teamsEventCatalog=@(Get-TeamsEventCatalog); teamsEventsEnabled=@(Get-TeamsEvents)
+            head=$chrome.head; open=$chrome.open; close=$chrome.close }
+    }
+    # Save which lifecycle events also post a Teams card (clamped to the catalog by presence).
+    Add-PodeRoute -Method Post -Path '/admin/teams-events' -ScriptBlock {
+        if (-not (Require 'configure' $WebEvent)) { return }
+        $u = $WebEvent.Session.Data.user; $b = $WebEvent.Data
+        $enabled = @(Get-TeamsEventCatalog | Where-Object { "$($b.($_.key))" -match '^(true|on|1)$' } | ForEach-Object { $_.key })
+        $cfg = Get-Store config
+        $cfg | Add-Member -NotePropertyName teamsEvents -NotePropertyValue $enabled -Force
+        Set-Store config $cfg
+        Write-Audit $u.username $u.role 'configure' 'teams-events' @{ events = ($enabled -join ', ') } 'success' 0 ''
+        Move-PodeResponseUrl -Url '/admin/config'
+    }
+    # Save the weekly expiration-alert settings (enable, threshold, channels, recipients).
+    Add-PodeRoute -Method Post -Path '/admin/expiration-alert' -ScriptBlock {
+        if (-not (Require 'configure' $WebEvent)) { return }
+        $u = $WebEvent.Session.Data.user; $b = $WebEvent.Data
+        $channels = @()
+        if ("$($b.chEmail)" -match '^(true|on|1)$') { $channels += 'email' }
+        if ("$($b.chTeams)" -match '^(true|on|1)$') { $channels += 'teams' }
+        $recips = @(("$($b.recipients)" -split '[,;\s]+') | Where-Object { $_ -match '@' })
+        $enabled = ("$($b.enabled)" -match '^(true|on|1)$')
+        $thr = 30; if ([int]::TryParse("$($b.thresholdDays)", [ref]$thr)) {} else { $thr = 30 }
+        $saved = Set-ExpirationAlertSettings -Enabled $enabled -ThresholdDays $thr -Channels $channels -Recipients $recips
+        Write-Audit $u.username $u.role 'configure' 'expiration-alert' @{ enabled=$saved.enabled; thresholdDays=$saved.thresholdDays; channels=($saved.channels -join ','); recipients=($saved.recipients -join ',') } 'success' 0 ''
+        Move-PodeResponseUrl -Url '/admin/config'
+    }
+    # Run the expiration digest right now (test), regardless of enabled, and report what was sent.
+    Add-PodeRoute -Method Post -Path '/admin/expiration-alert/test' -ScriptBlock {
+        if (-not (Require 'configure' $WebEvent)) { return }
+        $u = $WebEvent.Session.Data.user
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        $res = try { Invoke-ExpirationAlert -Force } catch { @{ ran=$false; error=$_.Exception.Message } }
+        $sw.Stop()
+        Write-Audit $u.username $u.role 'configure' 'expiration-alert-test' @{ actionable=$res.actionable; total=$res.total } ($(if($res.ran){'success'}else{'error'})) $sw.ElapsedMilliseconds ($res.error)
+        Write-PodeJsonResponse -Value @{ ok=[bool]$res.ran; actionable=$res.actionable; total=$res.total; expired=$res.expired; email=$res.email; teams=$res.teams; error=$res.error }
+    }
+    # Save which features the helpdesk role can see/use. Unchecked boxes don't POST, so we derive the
+    # enabled set from the catalog by presence. Clamped to the catalog, so nothing else can leak in.
+    Add-PodeRoute -Method Post -Path '/admin/helpdesk-features' -ScriptBlock {
+        if (-not (Require 'configure' $WebEvent)) { return }
+        $u = $WebEvent.Session.Data.user; $b = $WebEvent.Data
+        $enabled = @(Get-HelpdeskFeatureCatalog | Where-Object { "$($b.($_.action))" -match '^(true|on|1)$' } | ForEach-Object { $_.action })
+        $cfg = Get-Store config
+        $cfg | Add-Member -NotePropertyName helpdeskFeatures -NotePropertyValue $enabled -Force
+        Set-Store config $cfg
+        Write-Audit $u.username $u.role 'configure' 'helpdesk-features' @{ features = ($enabled -join ', ') } 'success' 0 ''
+        Move-PodeResponseUrl -Url '/admin/config'
     }
     Add-PodeRoute -Method Post -Path '/admin/config' -ScriptBlock {
         if (-not (Require 'configure' $WebEvent)) { return }
@@ -394,6 +453,28 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
         Set-Store config $cfg
         Write-Audit $u.username $u.role 'configure' 'ldap' @{ enabled=$cfg.ldapEnabled } 'success' 0 ''
         Move-PodeResponseUrl -Url '/admin/config'
+    }
+    # Audit-log rotation size + archive retention (admin). Blank/invalid keeps the current default.
+    Add-PodeRoute -Method Post -Path '/admin/audit-config' -ScriptBlock {
+        if (-not (Require 'configure' $WebEvent)) { return }
+        $u = $WebEvent.Session.Data.user; $b = $WebEvent.Data
+        $mb = 5.0;  $tmpMb = 0.0; if ([double]::TryParse([string]$b.auditMaxMB, [ref]$tmpMb) -and $tmpMb -ge 1) { $mb = $tmpMb }
+        $days = 730; $tmpDays = 0; if ([int]::TryParse([string]$b.auditRetentionDays, [ref]$tmpDays) -and $tmpDays -ge 0) { $days = $tmpDays }
+        $cfg = Get-Store config
+        $cfg | Add-Member -NotePropertyName auditMaxMB -NotePropertyValue $mb -Force
+        $cfg | Add-Member -NotePropertyName auditRetentionDays -NotePropertyValue $days -Force
+        Set-Store config $cfg
+        Write-Audit $u.username $u.role 'configure' 'audit-log' @{ maxMB = $mb; retentionDays = $days } 'success' 0 ''
+        Move-PodeResponseUrl -Url '/admin/config'
+    }
+    # Standalone Audit page (its own tab). The audit table + filters render here alone - the /admin/audit
+    # JSON endpoint below feeds it. (Historically the Audit tab pointed at /?view=audit, which showed the
+    # audit table BELOW the Run Scripts page; this gives it its own page.)
+    Add-PodeRoute -Method Get -Path '/audit' -ScriptBlock {
+        if (-not (Require 'view-history' $WebEvent)) { return }
+        $u = $WebEvent.Session.Data.user
+        $chrome = Get-AppChrome -Active 'audit' -User $u -Title 'Audit log' -Subtitle 'All recorded actions' -HasLogo ([bool]((Get-Store config).logoFile))
+        Write-PodeViewResponse -Path 'audit' -Data @{ user=$u; head=$chrome.head; open=$chrome.open; close=$chrome.close }
     }
     Add-PodeRoute -Method Get -Path '/admin/audit' -ScriptBlock {
         if (-not (Require 'view-history' $WebEvent)) { return }
@@ -560,6 +641,18 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
         Write-PodeJsonResponse -Value @{ items = $out }
     }
 
+    # Intune device-name typeahead for the Create-User form (top 10 by substring). Guarded by create-user
+    # since that's the only page using it. Returns a flat name array for the <datalist>.
+    Add-PodeRoute -Method Get -Path '/intune/devices/search' -ScriptBlock {
+        if (-not (Require 'create-user' $WebEvent)) { return }
+        $q = ([string]$WebEvent.Query['q']).Trim()
+        $out = @()
+        if ($q.Length -ge 1 -and (Test-IntuneConfigured)) {
+            try { $out = @(Find-IntuneDeviceNames -Query $q -Max 10) } catch {}
+        }
+        Write-PodeJsonResponse -Value @{ items = $out }
+    }
+
     Add-PodeRoute -Method Get -Path '/inventory/swap' -ScriptBlock {
         if (-not (Require 'inventory' $WebEvent)) { return }
         $u = $WebEvent.Session.Data.user
@@ -573,14 +666,14 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
     Add-PodeRoute -Method Post -Path '/inventory/swap/preview' -ScriptBlock {
         if (-not (Require 'inventory' $WebEvent)) { return }
         $b = $WebEvent.Data
-        Write-PodeJsonResponse -Value (Get-SwapPreview -UserDisplayName ([string]$b.userName) -OldTitle ([string]$b.oldDevice) -NewTitle ([string]$b.newDevice))
+        Write-PodeJsonResponse -Value (Get-SwapPreview -UserDisplayName ([string]$b.userName) -OldTitle ([string]$b.oldDevice) -NewTitle ([string]$b.newDevice) -OldPhysical ([string]$b.oldPhysical))
     }
 
     Add-PodeRoute -Method Post -Path '/inventory/swap/execute' -ScriptBlock {
         if (-not (Require 'inventory' $WebEvent)) { return }
         $u = $WebEvent.Session.Data.user
         $b = $WebEvent.Data
-        $res = Invoke-ComputerSwap -UserDisplayName ([string]$b.userName) -UserId ([string]$b.userId) -OldTitle ([string]$b.oldDevice) -NewTitle ([string]$b.newDevice)
+        $res = Invoke-ComputerSwap -UserDisplayName ([string]$b.userName) -UserId ([string]$b.userId) -OldTitle ([string]$b.oldDevice) -NewTitle ([string]$b.newDevice) -OldPhysical ([string]$b.oldPhysical)
         $st = if ($res.ok) { 'success' } else { 'partial' }
         Write-Audit $u.username $u.role 'computer-swap' ([string]$b.newDevice) @{ user = [string]$b.userName; old = [string]$b.oldDevice; new = [string]$b.newDevice } $st 0 ''
         try { Send-SwapNotification -Result $res -Operator $u.username | Out-Null } catch {}
@@ -603,7 +696,7 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
         if (-not (Require 'inventory' $WebEvent)) { return }
         $u = $WebEvent.Session.Data.user; $b = $WebEvent.Data
         $hasComment = [bool](([string]$b.comment).Trim())
-        $res = Set-InventoryStatus -Title ([string]$b.device) -Deployment ([string]$b.deployment) -Computer ([string]$b.computer) -Comment ([string]$b.comment) -SetComment:$hasComment
+        $res = Set-InventoryStatus -Title ([string]$b.device) -Deployment ([string]$b.deployment) -Computer ([string]$b.computer) -Physical ([string]$b.physical) -Comment ([string]$b.comment) -SetComment:$hasComment
         $st = if ($res.ok) { 'success' } else { 'error' }
         Write-Audit $u.username $u.role 'inventory-status' ([string]$b.device) @{ deployment = [string]$b.deployment; computer = [string]$b.computer } $st 0 ([string]$res.error)
         Write-PodeJsonResponse -Value $res
@@ -867,6 +960,210 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
         Write-PodeViewResponse -Path 'veeam' -Data @{ user=$u; configured=$configured; days=$days; job=$job; err=$err; controlsHtml=$controlsHtml; bodyHtml=$bodyHtml; rowsJson=$rowsJson; reportTitle=$reportTitle; head=$chrome.head; open=$chrome.open; close=$chrome.close }
     }
 
+    # ---- Hyper-V / failover cluster (admin, optional add-on, READ-ONLY) ----
+    # The CIM logic lives in the catalog scripts (60-63) and is reused here via Invoke-ManagedScript
+    # rather than duplicated into a lib - same approach as the helpdesk dashboard widget. 'hyperv-view'
+    # is not in the helpdesk feature catalog, so this is admin-only until a toggle is added for it.
+    Add-PodeRoute -Method Get -Path '/admin/hyperv' -ScriptBlock {
+        if (-not (Require 'hyperv-view' $WebEvent)) { return }
+        $u = $WebEvent.Session.Data.user
+        $chrome = Get-AppChrome -Active 'hyperv' -User $u -Title 'Hyper-V' -Subtitle 'Cluster nodes, virtual machines and roles (read-only)' -HasLogo ([bool]((Get-Store config).logoFile))
+        if (-not (Test-HyperVConfigured)) {
+            Write-PodeViewResponse -Path 'hyperv' -Data @{ user=$u; configured=$false; bodyHtml=''; err=''; head=$chrome.head; open=$chrome.open; close=$chrome.close }
+            return
+        }
+        $scriptDir = $using:ScriptDir
+        $pill = { param($s)
+            $cls = switch ("$s") { 'Running' { 'ok' } 'Online' { 'ok' } 'Up' { 'ok' } 'OK' { 'ok' }
+                                   'Off' { 'note' } 'Offline' { 'note' } 'Saved' { 'note' } 'Paused' { 'man' }
+                                   default { 'fail' } }
+            "<span class='$cls'>$(ConvertTo-PSCEncoded ([string]$s))</span>"
+        }
+        $err = ''
+        # A host being unreachable must degrade a panel, not blank the page - each runs independently.
+        $nodesR = Invoke-ManagedScript -Path (Join-Path $scriptDir '61-Get-HyperVClusterNodes.ps1') -TimeoutSec 60
+        $vmsR   = Invoke-ManagedScript -Path (Join-Path $scriptDir '60-Get-HyperVVms.ps1')          -TimeoutSec 90
+        $rolesR = Invoke-ManagedScript -Path (Join-Path $scriptDir '62-Get-HyperVClusterRoles.ps1') -TimeoutSec 60
+
+        $nodeRows = if ($nodesR.ok -and @($nodesR.data).Count) { (@($nodesR.data) | ForEach-Object {
+            "<tr><td>$(ConvertTo-PSCEncoded ([string]$_.Node))</td><td>$(& $pill $_.State)</td><td>$($_.VMRolesOwned)</td><td>$($_.NodeWeight)</td></tr>"
+        }) -join '' } else { "<tr><td colspan='4' class='note'>$(ConvertTo-PSCEncoded ([string]$nodesR.error))</td></tr>" }
+
+        $vmRows = if (-not $vmsR.ok) {
+            "<tr><td colspan='7' class='fail'>Could not read virtual machines: $(ConvertTo-PSCEncoded ([string]$vmsR.error))</td></tr>"
+        } elseif (@($vmsR.data).Count) { (@($vmsR.data) | ForEach-Object {
+            # Memory pressure is the number worth eyeballing: sustained high pressure means the guest
+            # wants more RAM than it has. Amber over 80.
+            $pr = if ($null -ne $_.PressurePct) { $cls = if ([int]$_.PressurePct -ge 80) { 'man' } else { '' }; "<span class='$cls'>$($_.PressurePct)%</span>" } else { '' }
+            "<tr><td>$(ConvertTo-PSCEncoded ([string]$_.VM))</td><td>$(ConvertTo-PSCEncoded ([string]$_.Node))</td><td>$(& $pill $_.State)</td>" +
+            "<td>$($_.vCPU)</td><td>$(if($null -ne $_.CpuPct){"$($_.CpuPct)%"})</td><td>$($_.MemoryGB)</td><td>$pr</td>" +
+            "<td class='note'>$(ConvertTo-PSCEncoded ([string]$_.Note))</td></tr>"
+        }) -join '' } else { "<tr><td colspan='7' class='note'>No virtual machines found.</td></tr>" }
+
+        # If the roles script FAILED, say so. Falling through to the "all online" banner would report a
+        # healthy cluster on the strength of no data - the worst possible failure mode for a health panel.
+        $roleRows = if (-not $rolesR.ok) {
+            "<tr><td colspan='4' class='fail'>Could not read cluster roles: $(ConvertTo-PSCEncoded ([string]$rolesR.error))</td></tr>"
+        } else {
+            $problems = @(@($rolesR.data) | Where-Object { ($_.State -ne 'Online' -and -not ($_.State -eq 'Offline' -and $_.Resources -eq 0)) -or $_.Problems })
+            if ($problems.Count) { (@($problems) | ForEach-Object {
+                "<tr><td>$(ConvertTo-PSCEncoded ([string]$_.Role))</td><td>$(ConvertTo-PSCEncoded ([string]$_.OwnerNode))</td><td>$(& $pill $_.State)</td><td>$(ConvertTo-PSCEncoded ([string]$_.Problems))</td></tr>"
+            }) -join '' } else { "<tr><td colspan='4' class='ok'>All clustered roles are online.</td></tr>" }
+        }
+
+        # ---- migration card: options come from the cluster data we just read, so a stale page can't
+        # offer a VM or node that doesn't exist (the POST re-validates against the cluster anyway).
+        # Gated on its OWN action, so 'hyperv-view' can be granted for a read-only tab with no card.
+        $migHtml = ''
+        if ($rolesR.ok -and (Test-Authorized $u.role 'hyperv-migrate')) {
+            $vmOpts = (@($rolesR.data | Where-Object { $_.Type -eq 'VirtualMachine' } | Sort-Object Role) | ForEach-Object {
+                "<option value='$(ConvertTo-PSCEncoded ([string]$_.Role))'>$(ConvertTo-PSCEncoded ([string]$_.Role)) &mdash; on $(ConvertTo-PSCEncoded ([string]$_.OwnerNode))</option>"
+            }) -join ''
+            $nodeOpts = (@($nodesR.data | Sort-Object Node) | ForEach-Object {
+                "<option value='$(ConvertTo-PSCEncoded ([string]$_.Node))'>$(ConvertTo-PSCEncoded ([string]$_.Node))</option>"
+            }) -join ''
+            $migOn = Test-HyperVMigrationEnabled
+            $banner = if ($migOn) {
+                "<p class='note'>Migration runs as <b>you</b>, not as the console service account &mdash; enter <b>your own</b> AD credentials. Your username is written to the audit log; your password is never stored or logged.</p>"
+            } else {
+                "<p class='note'><b>Migration is turned off.</b> Submitting will preview only and move nothing. Set <code>&quot;migrationEnabled&quot;: true</code> in <code>data\hyperv.config.json</code> to enable.</p>"
+            }
+            $migHtml =
+                "<div class='card'><h3>Migrate a VM</h3>$banner" +
+                "<div style='display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end'>" +
+                    "<div><label>VM</label><select id='mvVm'>$vmOpts</select></div>" +
+                    "<div><label>Target node</label><select id='mvTarget'>$nodeOpts</select></div>" +
+                    "<div><label>Type</label><select id='mvType'><option value='Live'>Live</option><option value='Quick'>Quick</option></select></div>" +
+                "</div>" +
+                "<div style='display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-top:10px'>" +
+                    "<div><label>Your AD username</label><input id='mvUser' autocomplete='off' placeholder='DOMAIN\\you' style='width:190px'></div>" +
+                    "<div><label>Your AD password</label><input id='mvPass' type='password' autocomplete='off' style='width:190px'></div>" +
+                "</div>" +
+                "<label style='display:inline-flex;align-items:center;gap:8px;font-weight:normal;margin-top:10px'><input type='checkbox' id='mvConfirm' style='width:auto'> I understand this moves a running VM between hosts</label>" +
+                "<div style='margin-top:10px'><button onclick='hvMigrate(this)'>Migrate</button> <span id='mvStatus' class='note' style='margin-left:10px'></span></div>" +
+                "</div>"
+        }
+
+        # ---- checkpoints card: read-only, but needs Hyper-V rights the service account lacks, so it runs
+        # under the operator's OWN credentials on demand (results are filled in client-side by hvCheckpoints).
+        $cpHtml =
+            "<div class='card'><h3>Checkpoints</h3>" +
+            "<p class='note'>Checkpoints are not in the table above because reading them needs Hyper-V rights the read-only console service account deliberately lacks. Enter <b>your own</b> AD credentials to list them on demand &mdash; your username is written to the audit log; your password is never stored or logged.</p>" +
+            "<div style='display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end'>" +
+                "<div><label>Your AD username</label><input id='cpUser' autocomplete='off' placeholder='DOMAIN\\you' style='width:190px'></div>" +
+                "<div><label>Your AD password</label><input id='cpPass' type='password' autocomplete='off' style='width:190px'></div>" +
+                "<div><button onclick='hvCheckpoints(this)'>List checkpoints</button></div>" +
+            "</div>" +
+            "<div style='margin-top:10px'><span id='cpStatus' class='note'></span></div>" +
+            "<div id='cpResults' style='margin-top:10px'></div>" +
+            "</div>"
+
+        $bodyHtml =
+            "<div class='card'><h3>Cluster nodes</h3><div style='overflow-x:auto'><table>" +
+            "<tr><th>Node</th><th>State</th><th>VM roles owned</th><th>Weight</th></tr>$nodeRows</table></div></div>" +
+            "<div class='card'><h3>Roles needing attention</h3><div style='overflow-x:auto'><table>" +
+            "<tr><th>Role</th><th>Owner</th><th>State</th><th>Problems</th></tr>$roleRows</table></div></div>" +
+            "<div class='card'><h3>Virtual machines</h3><div style='overflow-x:auto'><table>" +
+            "<tr><th>VM</th><th>Node</th><th>State</th><th>vCPU</th><th>CPU</th><th>Memory (GB)</th><th>Pressure</th><th></th></tr>$vmRows</table></div>" +
+            "<p class='note' style='margin-top:10px'>VM list and state come from the cluster, usage from performance counters. " +
+            "Uptime and checkpoints are not read here as the service account - checkpoints are available on demand below under your own credentials.</p></div>" +
+            $cpHtml +
+            $migHtml
+
+        Write-PodeViewResponse -Path 'hyperv' -Data @{ user=$u; configured=$true; bodyHtml=$bodyHtml; err=$err; head=$chrome.head; open=$chrome.open; close=$chrome.close }
+    }
+
+    # ---- Hyper-V VM migration (admin, WRITE, operator-credential) ----
+    # The service account is read-only by design and CANNOT migrate a VM. The operator supplies their
+    # own AD credentials per request, exactly like user provisioning, so nothing privileged is stored
+    # and every migration is attributable to a real person.
+    # Ships dormant: needs "migrationEnabled": true in data\hyperv.config.json.
+    Add-PodeRoute -Method Post -Path '/admin/hyperv/migrate' -ScriptBlock {
+        # 'hyperv-migrate', NOT 'hyperv-view' - hiding the card is cosmetic, this is the real gate.
+        if (-not (Require 'hyperv-migrate' $WebEvent)) { return }
+        $u = $WebEvent.Session.Data.user; $b = $WebEvent.Data
+        if (-not (Test-HyperVConfigured)) { Write-PodeJsonResponse -Value @{ ok=$false; error='Hyper-V add-on is not configured.' }; return }
+
+        $vm     = [string]$b.vm
+        $target = [string]$b.target
+        $type   = if ("$($b.type)" -eq 'Quick') { 'Quick' } else { 'Live' }
+        if (-not $vm -or -not $target) { Write-PodeJsonResponse -Value @{ ok=$false; error='Pick a VM and a target node.' }; return }
+
+        # Validate against the CLUSTER, not against what the browser claimed. This both catches stale
+        # pages and means only a real VM name / real node name can ever reach the remote command.
+        try { $roles = @(Get-HyperVVmRoles); $nodes = @(Get-HyperVClusterNodeNames) }
+        catch { Write-PodeJsonResponse -Value @{ ok=$false; error=$_.Exception.Message }; return }
+        $role = @($roles | Where-Object { $_.Name -eq $vm }) | Select-Object -First 1
+        if (-not $role)                  { Write-PodeJsonResponse -Value @{ ok=$false; error="'$vm' is not a clustered VM role." }; return }
+        if ($nodes -notcontains $target) { Write-PodeJsonResponse -Value @{ ok=$false; error="'$target' is not a node in this cluster." }; return }
+        if ($role.OwnerNode -eq $target) { Write-PodeJsonResponse -Value @{ ok=$false; error="$vm already runs on $target." }; return }
+        if ("$($b.confirm)" -notmatch '^(true|on|1|yes)$') { Write-PodeJsonResponse -Value @{ ok=$false; error='Tick the confirmation box to proceed.' }; return }
+
+        if (-not (Test-HyperVMigrationEnabled)) {
+            # Dormant: record the intent, change nothing. Password is not part of the audit params.
+            Write-Audit $u.username $u.role 'hyperv-migrate-preview' $vm @{ from=$role.OwnerNode; to=$target; type=$type } 'preview' 0 'migration disabled'
+            Write-PodeJsonResponse -Value @{ ok=$true; preview=$true; message="Preview only - VM migration is turned off. Set `"migrationEnabled`": true in data\hyperv.config.json to enable. Nothing was moved." }
+            return
+        }
+        if (-not $b.opUser -or -not $b.opPassword) { Write-PodeJsonResponse -Value @{ ok=$false; error='Your AD username and password are required - the console service account is read-only and cannot migrate VMs.' }; return }
+
+        $sw  = [Diagnostics.Stopwatch]::StartNew()
+        $res = Invoke-HyperVMigration -VMName $vm -TargetNode $target -OperatorUser ([string]$b.opUser) -OperatorPassword ([string]$b.opPassword) -MigrationType $type
+        $sw.Stop()
+        # Audit params deliberately EXCLUDE opPassword - only the operator's USERNAME is recorded.
+        $status = if ($res.ok) { 'success' } else { 'error' }
+        $detail = if ($res.ok) { "moved to $($res.owner) (state $($res.state)) via $($res.via)" } else { $res.error }
+        Write-Audit $u.username $u.role 'hyperv-migrate' $vm @{ by=[string]$b.opUser; from=$role.OwnerNode; to=$target; type=$type } $status $sw.ElapsedMilliseconds $detail
+        Write-PodeJsonResponse -Value @{ ok=$res.ok; error=$res.error; owner=$res.owner; state=$res.state; from=$role.OwnerNode; to=$target }
+    }
+
+    # ---- Hyper-V checkpoints (READ, operator-credential) ----
+    # Gated on 'hyperv-view' (tab access): this is read-only and reveals nothing the operator isn't already
+    # entitled to see - it runs entirely under the operator's OWN credentials. The service account cannot
+    # read checkpoints and is never used here.
+    Add-PodeRoute -Method Post -Path '/admin/hyperv/checkpoints' -ScriptBlock {
+        if (-not (Require 'hyperv-view' $WebEvent)) { return }
+        $u = $WebEvent.Session.Data.user; $b = $WebEvent.Data
+        if (-not (Test-HyperVConfigured)) { Write-PodeJsonResponse -Value @{ ok=$false; error='Hyper-V add-on is not configured.' }; return }
+        if ([string]::IsNullOrWhiteSpace([string]$b.opUser) -or [string]::IsNullOrWhiteSpace([string]$b.opPassword)) {
+            Write-PodeJsonResponse -Value @{ ok=$false; error='Enter your AD username and password - the console service account cannot read checkpoints.' }; return
+        }
+        $sw  = [Diagnostics.Stopwatch]::StartNew()
+        $res = Get-HyperVCheckpoints -OperatorUser ([string]$b.opUser) -OperatorPassword ([string]$b.opPassword)
+        $sw.Stop()
+        # Audit params deliberately EXCLUDE opPassword - only the operator's USERNAME is recorded.
+        $status = if ($res.ok) { 'success' } else { 'error' }
+        $detail = if ($res.ok) { "$(@($res.data).Count) checkpoint(s)$(if($res.error){" (partial: $($res.error))"})" } else { [string]$res.error }
+        Write-Audit $u.username $u.role 'hyperv-checkpoints' '' @{ by=[string]$b.opUser } $status $sw.ElapsedMilliseconds $detail
+        # canRemove is only cosmetic (whether the JS draws Remove buttons) - the remove route re-checks.
+        Write-PodeJsonResponse -Value @{ ok=$res.ok; error=$res.error; checkpoints=@($res.data); canRemove=(Test-Authorized $u.role 'hyperv-checkpoint-remove') }
+    }
+
+    # ---- Hyper-V checkpoint removal (WRITE, operator-credential) ----
+    # Deletes ONE checkpoint under the operator's OWN credentials. Its own permission, separate from
+    # migration. Active behind confirm + credentials (no dormant file flag): checkpoint cleanup is routine
+    # and bounded (Remove-VMSnapshot merges the disk forward; it does not touch the running VM's state).
+    Add-PodeRoute -Method Post -Path '/admin/hyperv/checkpoints/remove' -ScriptBlock {
+        if (-not (Require 'hyperv-checkpoint-remove' $WebEvent)) { return }
+        $u = $WebEvent.Session.Data.user; $b = $WebEvent.Data
+        if (-not (Test-HyperVConfigured)) { Write-PodeJsonResponse -Value @{ ok=$false; error='Hyper-V add-on is not configured.' }; return }
+        $vm = [string]$b.vm; $id = [string]$b.id
+        if (-not $vm -or -not $id) { Write-PodeJsonResponse -Value @{ ok=$false; error='Pick a checkpoint to remove.' }; return }
+        if ([string]::IsNullOrWhiteSpace([string]$b.opUser) -or [string]::IsNullOrWhiteSpace([string]$b.opPassword)) {
+            Write-PodeJsonResponse -Value @{ ok=$false; error='Enter your AD username and password - the console service account cannot remove checkpoints.' }; return
+        }
+        if ("$($b.confirm)" -notmatch '^(true|on|1|yes)$') { Write-PodeJsonResponse -Value @{ ok=$false; error='Confirmation is required.' }; return }
+
+        $sw  = [Diagnostics.Stopwatch]::StartNew()
+        $res = Remove-HyperVCheckpoint -VMName $vm -CheckpointId $id -OperatorUser ([string]$b.opUser) -OperatorPassword ([string]$b.opPassword)
+        $sw.Stop()
+        $status = if ($res.ok) { 'success' } else { 'error' }
+        $detail = if ($res.ok) { "removed checkpoint '$($res.name)' on $vm via $($res.via)" } else { [string]$res.error }
+        # Audit params deliberately EXCLUDE opPassword - only the operator's USERNAME is recorded.
+        Write-Audit $u.username $u.role 'hyperv-checkpoint-remove' $vm @{ by=[string]$b.opUser; id=$id } $status $sw.ElapsedMilliseconds $detail
+        Write-PodeJsonResponse -Value @{ ok=$res.ok; error=$res.error; name=$res.name }
+    }
+
     # ---- Veeam -> SharePoint remediation tracking (admin, optional add-on) ----
     Add-PodeRoute -Method Get -Path '/admin/veeam/remediation' -ScriptBlock {
         if (-not (Require 'veeam-reports' $WebEvent)) { return }
@@ -938,6 +1235,12 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
     # writes only the synced columns, so it never disturbs remediation notes. Manual "Sync now" also works.
     Add-PodeSchedule -Name 'veeam-sharepoint-sync' -Cron '0 8 * * *' -ScriptBlock {
         try { if (Test-SharePointConfigured) { Sync-VeeamToSharePoint -Days 8 | Out-Null } } catch {}
+    }
+
+    # Weekly credential-expiration digest: Monday 08:00. No-op unless the expiration alert is enabled in
+    # Config; delivers to the configured channels (email / Teams). See Alerts.ps1 Invoke-ExpirationAlert.
+    Add-PodeSchedule -Name 'expiration-alert' -Cron '0 8 * * 1' -ScriptBlock {
+        try { Invoke-ExpirationAlert | Out-Null } catch {}
     }
 }
 

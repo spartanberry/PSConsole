@@ -3,7 +3,7 @@
 .RUNEXAMPLE  IncludeMatches=true
 .CATEGORY  Intune
 .NOTES     App perms: read app DeviceManagementManagedDevices.Read.All + write app Sites.Selected on the inventory site. No writes. Needs data\inventory.config.json.
-.ROLE      Admin
+.ROLE      HelpDesk
 #>
 [CmdletBinding()]
 param([switch]$IncludeMatches)
@@ -32,6 +32,14 @@ function Invoke-GraphGet([string]$Uri, [string]$Token) {
     } while ($Uri)
     $out
 }
+# Canonical form of a person's name so ordering/comma/case/spacing don't cause false mismatches:
+# "Smith, John" / "John Smith" / "john  smith" all collapse to the same token set. This makes the
+# Owner-vs-primary compare format-insensitive without changing any directory data (many orgs store
+# displayName as "Last, First" for GAL sorting - that's cosmetic, not a real mismatch).
+function Get-NameKey([string]$Name) {
+    if (-not $Name) { return '' }
+    (($Name -replace '[,.]', ' ') -split '\s+' | Where-Object { $_ } | ForEach-Object { $_.ToLower() } | Sort-Object) -join ' '
+}
 
 # --- Intune managed devices (read app) - keyed by upper-cased device name ---
 $rtok = Get-AppToken 'graph.config.json'
@@ -58,11 +66,12 @@ foreach ($it in $items) {
     $dev      = $intune[$title.ToUpper()]
     $inIntune = [bool]$dev
     $primary  = if ($dev) { ("$($dev.userDisplayName)").Trim() } else { '' }
+    $primUpn  = if ($dev) { ("$($dev.userPrincipalName)").Trim() } else { '' }
 
     $issue = $null
     if     ($marked -and -not $inIntune)                       { $issue = 'Inventory=Intune but NOT enrolled in Intune' }
     elseif ($inIntune -and -not $marked)                       { $issue = 'In Intune but inventory=Not Managed' }
-    elseif ($inIntune -and $owner -and $primary -and ($owner -ne $primary)) { $issue = 'Owner does not match Intune primary user' }
+    elseif ($inIntune -and $owner -and $primary -and ((Get-NameKey $owner) -ne (Get-NameKey $primary))) { $issue = 'Owner does not match Intune primary user' }
     elseif ($inIntune -and $owner -and -not $primary)          { $issue = 'Inventory owner set; Intune has no primary user' }
     elseif ($inIntune -and -not $owner -and $primary)          { $issue = 'Intune primary user set; inventory owner blank' }
 
@@ -73,6 +82,7 @@ foreach ($it in $items) {
             InventoryOwner    = $owner
             InventoryIntune   = $invIntun
             IntunePrimaryUser = $primary
+            IntunePrimaryUPN  = $primUpn
         })
     }
 }

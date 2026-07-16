@@ -17,6 +17,11 @@ if ($maxPwdAgeTicks -eq 0) { Write-Warning "Domain max password age is 0 (passwo
 $maxPwdAgeDays = [TimeSpan]::FromTicks($maxPwdAgeTicks).TotalDays
 $now = Get-Date
 
+# Emit a preformatted local string: WinPS 5.1 ConvertTo-Json renders a raw DateTime as
+# "/Date(1333728371000)/", which is what would reach the table, CSV export and emailed reports.
+# Sorting here is on DaysLeft (numeric), so formatting these does not disturb the order.
+function Format-Stamp { param($Value) if ($Value) { ([datetime]$Value).ToString('MM/dd/yyyy h:mm tt') } else { '' } }
+
 $ds = New-Object System.DirectoryServices.DirectorySearcher([ADSI]"LDAP://$domainDN")
 # enabled users, with a real pwdLastSet, NOT flagged DONT_EXPIRE_PASSWD (bit 65536)
 $ds.Filter = "(&(objectCategory=person)(objectClass=user)(!(userAccountControl:1.2.840.113556.1.4.803:=2))(!(userAccountControl:1.2.840.113556.1.4.803:=65536))(pwdLastSet>=1))"
@@ -34,8 +39,8 @@ $ds.FindAll() | ForEach-Object {
             SamAccountName = "$($p.samaccountname)"
             DisplayName    = "$($p.displayname)"
             Email          = "$($p.mail)"
-            PasswordSet    = $lastSet
-            Expires        = $expires
+            PasswordSet    = Format-Stamp $lastSet
+            Expires        = Format-Stamp $expires
             DaysLeft       = $daysLeft
         }
     }

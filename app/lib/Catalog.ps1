@@ -7,7 +7,7 @@
 # their scripts are hidden and non-runnable unless their config (data\intune.config.json /
 # data\veeam.config.json) is present and enabled.
 
-$script:PSCCategoryOrder = @('Active Directory', 'Entra ID', 'Intune', 'Veeam')
+$script:PSCCategoryOrder = @('Active Directory', 'AD Hygiene', 'Entra ID', 'Intune', 'Veeam', 'Hyper-V', 'UniFi', 'Expirations')
 
 # --- Intune add-on gate (mirrors the Veeam config pattern) ---
 function Get-IntuneConfigPath {
@@ -50,13 +50,30 @@ function Get-ScriptMeta {
     [PSCustomObject]@{ Name = $name; Category = $cat; Role = $role; Example = $ex }
 }
 
-# Scripts the given role may see/run, after the role gate and the Intune add-on gate.
+# Categories that are admin-only by default but can be GRANTED to the helpdesk role via a Config toggle
+# (Config > Helpdesk feature access). Maps the script Category -> the helpdesk feature action that unlocks it.
+$script:PSCHelpdeskGrantableCategories = @{ 'UniFi' = 'unifi' }
+
+# Whether a role may see/run a given script: admin sees all; helpdesk sees HelpDesk-tagged scripts PLUS any
+# grantable category the admin has toggled on (e.g. UniFi). $HdFeatures = @(Get-HelpdeskFeatures).
+function Test-RoleSeesScript {
+    param($Meta, [string]$Role, [string[]]$HdFeatures = @())
+    if ($Role -eq 'admin') { return $true }
+    if ($Meta.Role -eq 'HelpDesk') { return $true }
+    $act = $script:PSCHelpdeskGrantableCategories[[string]$Meta.Category]
+    return [bool]($act -and ($HdFeatures -contains $act))
+}
+
+# Scripts the given role may see/run, after the role gate and the add-on gates.
 function Get-ScriptCatalog {
     param([string]$Dir, [string]$Role = 'admin')
     $intuneOn = Test-IntuneConfigured
     $veeamOn  = Test-VeeamConfigured
+    $unifiOn  = Test-UnifiConfigured
+    $hypervOn = Test-HyperVConfigured
+    $hdFeatures = if ($Role -eq 'admin') { @() } else { try { @(Get-HelpdeskFeatures) } catch { @() } }
     @(Get-ChildItem $Dir -Filter *.ps1 -ErrorAction SilentlyContinue | ForEach-Object { Get-ScriptMeta $_.FullName } |
-        Where-Object { ($Role -eq 'admin' -or $_.Role -eq 'HelpDesk') -and ($_.Category -ne 'Intune' -or $intuneOn) -and ($_.Category -ne 'Veeam' -or $veeamOn) })
+        Where-Object { (Test-RoleSeesScript $_ $Role $hdFeatures) -and ($_.Category -ne 'Intune' -or $intuneOn) -and ($_.Category -ne 'Veeam' -or $veeamOn) -and ($_.Category -ne 'UniFi' -or $unifiOn) -and ($_.Category -ne 'Hyper-V' -or $hypervOn) })
 }
 
 # Grouped <optgroup> HTML for a <select>, categories in PSCCategoryOrder then any extras.
