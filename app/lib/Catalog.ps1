@@ -7,7 +7,7 @@
 # their scripts are hidden and non-runnable unless their config (data\intune.config.json /
 # data\veeam.config.json) is present and enabled.
 
-$script:PSCCategoryOrder = @('Active Directory', 'AD Hygiene', 'Entra ID', 'Intune', 'Veeam', 'Hyper-V', 'UniFi', 'Expirations')
+$script:PSCCategoryOrder = @('Active Directory', 'AD Hygiene', 'Entra ID', 'Intune', 'Defender', 'Veeam', 'Hyper-V', 'UniFi', 'Service Desk', 'Expirations')
 
 # --- Intune add-on gate (mirrors the Veeam config pattern) ---
 function Get-IntuneConfigPath {
@@ -71,9 +71,11 @@ function Get-ScriptCatalog {
     $veeamOn  = Test-VeeamConfigured
     $unifiOn  = Test-UnifiConfigured
     $hypervOn = Test-HyperVConfigured
+    $sdpOn    = Test-SdpConfigured
+    $defenderOn = Test-DefenderConfigured
     $hdFeatures = if ($Role -eq 'admin') { @() } else { try { @(Get-HelpdeskFeatures) } catch { @() } }
     @(Get-ChildItem $Dir -Filter *.ps1 -ErrorAction SilentlyContinue | ForEach-Object { Get-ScriptMeta $_.FullName } |
-        Where-Object { (Test-RoleSeesScript $_ $Role $hdFeatures) -and ($_.Category -ne 'Intune' -or $intuneOn) -and ($_.Category -ne 'Veeam' -or $veeamOn) -and ($_.Category -ne 'UniFi' -or $unifiOn) -and ($_.Category -ne 'Hyper-V' -or $hypervOn) })
+        Where-Object { (Test-RoleSeesScript $_ $Role $hdFeatures) -and ($_.Category -ne 'Intune' -or $intuneOn) -and ($_.Category -ne 'Veeam' -or $veeamOn) -and ($_.Category -ne 'UniFi' -or $unifiOn) -and ($_.Category -ne 'Hyper-V' -or $hypervOn) -and ($_.Category -ne 'Service Desk' -or $sdpOn) -and ($_.Category -ne 'Defender' -or $defenderOn) })
 }
 
 # Grouped <optgroup> HTML for a <select>, categories in PSCCategoryOrder then any extras.
