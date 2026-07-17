@@ -271,7 +271,8 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
             Add-OnboardingPending -Plan $plan -Operator $u.username -OperatorRole $u.role -Dn $res.dn
             try { Send-UserCreatedNotification -Plan $plan -Operator $u.username -Dn $res.dn | Out-Null } catch {}
         }
-        Write-PodeJsonResponse -Value @{ ok=$res.ok; error=$res.error; dn=$res.dn; plan=$plan; cloudPending=[bool]$res.ok }
+        $resp = @{ ok=$res.ok; error=$res.error; dn=$res.dn; plan=$plan; cloudPending=[bool]$res.ok }
+        Write-PodeJsonResponse -Value $resp
     }
 
     # ---- Decommission user (helpdesk + admin): disable + move to Disabled Accounts OU ----

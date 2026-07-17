@@ -2,6 +2,26 @@
 
 All notable changes to PSConsole. Versions follow the `VERSION` file.
 
+## [2.0.0] - 2026-07-16
+
+Milestone release: two new read-only integrations round out the v2 line begun in 1.14.0. Additive - no
+breaking changes.
+
+### Added
+- **ServiceDesk Plus reporting add-on (admin).** Read-only reporting against a ManageEngine ServiceDesk Plus
+  backend via direct SQL (the free edition has no REST API). Three Run-page reports in a new **Service Desk**
+  category: **open by technician** (with 7- and 30-day backlog counts), **open requests** (aging list, oldest
+  first, `-MinAgeDays`), and **volume trend** (created vs. completed per month, `-Months`). Windows Integrated
+  auth by default so no secret is stored; ships dormant, configured via `sdp-setup\Set-SdpConfig.ps1` →
+  `data\sdp.config.json`. Strictly read-only — PSConsole never writes to the live desk database.
+- **Microsoft Defender for Endpoint add-on (admin).** Read-only device inventory from the Defender machines
+  API, surfaced as Run-page scripts in a new **Defender** category: **devices** (full inventory with health,
+  onboarding status, risk and exposure; `-InactiveOnly`), **duplicates** (devices registered under more than
+  one Defender record, with `-InactiveOnly` and `-LikelyReimage` filters plus Defender's own duplicate flags),
+  and **not onboarded** (Intune-managed devices missing from Defender, joined on the Entra device ID, never on
+  name). Reuses the existing Entra app credentials with a new WindowsDefenderATP `Machine.Read.All` permission;
+  ships dormant, configured via `data\defender.config.json`.
+
 ## [1.14.0] - 2026-07-16
 
 ### Added

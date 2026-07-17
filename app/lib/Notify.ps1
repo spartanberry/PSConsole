@@ -26,9 +26,10 @@ function Write-NotifyLog([string]$Msg) {
 
 # Core sender: HTML email to EXPLICIT recipients. Returns @{ ok=..; note/error=.. }. Never throws.
 function Send-PSCMail {
-    param([string[]]$To,[string]$Subject,[string]$BodyHtml)
+    param([string[]]$To,[string]$Subject,[string]$BodyHtml,[string[]]$Cc)
     if (-not (Test-SmtpConfigured)) { return @{ ok=$false; note='smtp not configured' } }
     $recips = @($To) | Where-Object { $_ }
+    $ccList = @($Cc) | Where-Object { $_ }
     if (-not $recips.Count) { return @{ ok=$false; note='no recipients' } }
     $msg = $null; $smtp = $null
     try {
@@ -36,6 +37,7 @@ function Send-PSCMail {
         $msg = New-Object System.Net.Mail.MailMessage
         $msg.From = New-Object System.Net.Mail.MailAddress([string]$c.from)
         foreach ($t in $recips) { $msg.To.Add([string]$t) }
+        foreach ($t in $ccList) { $msg.CC.Add([string]$t) }
         $msg.Subject = $Subject
         $msg.Body = $BodyHtml
         $msg.IsBodyHtml = $true
