@@ -2,12 +2,39 @@
 
 All notable changes to PSConsole. Versions follow the `VERSION` file.
 
-## [2.0.0] - 2026-07-16
+## [2.0.0] - 2026-07-20
 
-Milestone release: two new read-only integrations round out the v2 line begun in 1.14.0. Additive - no
-breaking changes.
+Milestone release closing out the v2 line: an at-a-glance **Operations dashboard** plus several new read-only
+integrations - Veeam Backup for Microsoft 365, UniFi Protect cameras, Microsoft Defender XDR / cloud alerts,
+ServiceDesk Plus reporting, and Defender for Endpoint. Additive - no breaking changes.
 
 ### Added
+- **Operations dashboard (admin; optionally helpdesk).** A new **Operations** page for morning-open /
+  end-of-day-close checks: exception-first status tiles for backups, backup remediation, endpoint security
+  alerts, cloud/XDR alerts, WAN + internet health, network-device (switch/AP/gateway) status, UniFi Protect
+  cameras, Hyper-V cluster nodes and VMs, credential expirations, and the helpdesk queue. Red/yellow tiles sort
+  to the top and each links straight to its detail. The snapshot is cached so the page loads instantly, and is
+  recomputed on a schedule (6:30 AM / 4:30 PM) plus an on-demand Refresh. Admin-only by default; a new
+  **Operations Dashboard** helpdesk feature toggle (Config -> Helpdesk feature access) grants read access to
+  helpdesk. The helpdesk-queue tile can exclude specific technicians via a config list.
+- **Veeam Backup for Microsoft 365 (VB365) add-on (admin).** Extends the Veeam integration to the M365 backup
+  server (same host, reusing `data\veeam.config.json`). VB365 job sessions now appear in the Veeam tab and the
+  SharePoint backup-status list next to the on-prem jobs, and new **Veeam**-category Run-page scripts add a
+  grouped **error/warning report**, a **backup coverage gap** (licensed users no VB365 job protects), and job
+  membership hygiene (stale/departed users, Office 365 groups). A daily coverage-gap email alert fires only when
+  the gap is non-empty. Read-only reporting; the few membership writes run under the Veeam service account and
+  never delete existing restore points.
+- **UniFi Protect cameras.** The UniFi add-on (Network, from 1.14.0) now also reports **camera up/down** via the
+  UniFi Protect Integration API - a new **Get-UnifiCameras** Run-page script and a Cameras tile on the Operations
+  dashboard. Protect can run on a separate host (e.g. a UNVR): `Set-UnifiConfig.ps1 -ProtectKey [-ProtectUrl
+  <host>]` stores a Protect-scoped API key and URL per console alongside the Network key, DPAPI-encrypted.
+- **Microsoft Defender XDR / cloud alerts (admin).** A unified alert feed from the Microsoft Graph Security API
+  (`alerts_v2`) covering Defender for Office 365 (email), Defender for Identity, and Purview DLP - kept
+  deliberately **separate** from the endpoint (Defender for Endpoint) feed. Surfaced as a **Cloud alerts** tile
+  and a **Get-XdrAlerts** Run-page script. Operational noise is dropped via a config title-suppression list, DLP
+  is bucketed on its own (near-always false positive), and only chosen sources (default: Identity) escalate the
+  tile - all tunable in config without code. Reuses the shared Entra app with new `SecurityAlert.Read.All` /
+  `SecurityIncident.Read.All` Graph permissions.
 - **ServiceDesk Plus reporting add-on (admin).** Read-only reporting against a ManageEngine ServiceDesk Plus
   backend via direct SQL (the free edition has no REST API). Three Run-page reports in a new **Service Desk**
   category: **open by technician** (with 7- and 30-day backlog counts), **open requests** (aging list, oldest

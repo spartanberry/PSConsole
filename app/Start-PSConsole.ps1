@@ -380,6 +380,47 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
         Write-Audit $u.username $u.role 'upload' $fname @{} 'success' 0 ''
         Move-PodeResponseUrl -Url '/'
     }
+    # Operations dashboard: renders the CACHED snapshot instantly (the checks are slow remote calls). Admin-only.
+    Add-PodeRoute -Method Get -Path '/admin/operations' -ScriptBlock {
+        if (-not (Require 'operations-view' $WebEvent)) { return }
+        $u = $WebEvent.Session.Data.user
+        $snap = Get-CachedOpsSnapshot
+        $meta = @{
+            crit = @{ label='NEEDS ATTENTION'; cls='ops-crit' }
+            warn = @{ label='REVIEW';          cls='ops-warn' }
+            ok   = @{ label='OK';              cls='ops-ok'   }
+            info = @{ label='INFO';            cls='ops-info' }
+            na   = @{ label='N/A';             cls='ops-na'   }
+        }
+        $order = @{ crit=0; warn=1; info=2; ok=3; na=4 }
+        if (-not $snap -or -not @($snap.tiles).Count) {
+            $bodyHtml = "<div class='card'><p class='note' style='margin:0'>No snapshot yet - click <b>Refresh</b> to compute the first one (takes ~30 seconds while it queries each system).</p></div>"
+            $asOf = 'never'
+        } else {
+            $asOf = try { ([datetime]$snap.generatedAt).ToString('ddd MMM d, h:mm tt') } catch { [string]$snap.generatedAt }
+            $tiles = @($snap.tiles | Sort-Object { $order[[string]$_.status] }, area)
+            $cards = (@($tiles) | ForEach-Object {
+                $m = $meta[[string]$_.status]; if (-not $m) { $m = $meta['na'] }
+                $link = if ($_.href) { " <a href='$($_.href)'>view &rsaquo;</a>" } else { '' }
+                "<div class='ops-tile $($m.cls)'>" +
+                "<div class='ops-head'><span class='ops-area'>$(ConvertTo-PSCEncoded ([string]$_.area))</span><span class='ops-badge'>$($m.label)</span></div>" +
+                "<div class='ops-line'>$(ConvertTo-PSCEncoded ([string]$_.headline))</div>" +
+                "<div class='note' style='margin:0'>$(ConvertTo-PSCEncoded ([string]$_.detail))$link</div></div>"
+            }) -join ''
+            $bodyHtml = "<div class='ops-grid'>$cards</div>"
+        }
+        $header = "<div class='card' style='display:flex;justify-content:space-between;align-items:center'><div><b>Morning open / end-of-day close.</b> <span class='note'>Only items needing attention show at the top. As of <b>$asOf</b>.</span></div><button class='secondary' style='margin:0' onclick='opsRefresh(this)'>Refresh</button></div>"
+        $chrome = Get-AppChrome -Active 'operations' -User $u -Title 'Operations' -Subtitle 'At-a-glance status' -HasLogo ([bool]((Get-Store config).logoFile))
+        Write-PodeViewResponse -Path 'operations' -Data @{ user=$u; bodyHtml=($header + $bodyHtml); head=$chrome.head; open=$chrome.open; close=$chrome.close }
+    }
+    # Recompute the snapshot on demand (slow - runs all the checks). Requires operations-view.
+    Add-PodeRoute -Method Post -Path '/admin/operations/refresh' -ScriptBlock {
+        if (-not (Require 'operations-view' $WebEvent)) { return }
+        $u = $WebEvent.Session.Data.user
+        $snap = try { Update-OpsSnapshot } catch { $null }
+        Write-Audit $u.username $u.role 'ops-refresh' 'operations' @{ tiles=@($snap.tiles).Count } ($(if($snap){'success'}else{'error'})) 0 ''
+        Write-PodeJsonResponse -Value @{ ok=[bool]$snap }
+    }
     Add-PodeRoute -Method Get -Path '/admin/config' -ScriptBlock {
         if (-not (Require 'configure' $WebEvent)) { return }
         $cfg = Get-Store config
@@ -393,6 +434,9 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
                 "<span class='pill s-pending-sync'>Preview only</span> &mdash; submitting previews and audits intent, but moves nothing."
             })
             expAlert=(Get-ExpirationAlertSettings); teamsConfigured=(Test-TeamsConfigured); smtpConfigured=(Test-SmtpConfigured)
+            vboCoverageAlert=(Get-Vbo365CoverageAlertSettings); veeamOn=(Test-VeeamConfigured)
+            veeamHistoryPrune=(Get-VeeamHistoryPruneSettings); sharePointOn=(Test-SharePointConfigured)
+            defenderAlert=(Get-DefenderAlertSettings); defenderOn=(Test-DefenderConfigured)
             teamsEventCatalog=@(Get-TeamsEventCatalog); teamsEventsEnabled=@(Get-TeamsEvents)
             head=$chrome.head; open=$chrome.open; close=$chrome.close }
     }
@@ -420,6 +464,65 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
         $saved = Set-ExpirationAlertSettings -Enabled $enabled -ThresholdDays $thr -Channels $channels -Recipients $recips
         Write-Audit $u.username $u.role 'configure' 'expiration-alert' @{ enabled=$saved.enabled; thresholdDays=$saved.thresholdDays; channels=($saved.channels -join ','); recipients=($saved.recipients -join ',') } 'success' 0 ''
         Move-PodeResponseUrl -Url '/admin/config'
+    }
+    # Save the VB365 backup-coverage alert settings (enable, recipients, service-account exclusions).
+    Add-PodeRoute -Method Post -Path '/admin/vbo-coverage-alert' -ScriptBlock {
+        if (-not (Require 'configure' $WebEvent)) { return }
+        $u = $WebEvent.Session.Data.user; $b = $WebEvent.Data
+        $enabled = ("$($b.enabled)" -match '^(true|on|1)$')
+        $recips  = @("$($b.recipients)" -split '[;,\s]+' | Where-Object { $_ })
+        $exclude = @("$($b.exclude)" -split '\r?\n' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        $saved = Set-Vbo365CoverageAlertSettings -Enabled $enabled -Recipients $recips -Exclude $exclude
+        Write-Audit $u.username $u.role 'configure' 'vbo-coverage-alert' @{ enabled=$saved.enabled; recipients=($saved.recipients -join ','); excluded=$saved.exclude.Count } 'success' 0 ''
+        Move-PodeResponseUrl -Url '/admin/config'
+    }
+    # Save the Defender alert settings (enable, recipients, channels, severities).
+    Add-PodeRoute -Method Post -Path '/admin/defender-alert' -ScriptBlock {
+        if (-not (Require 'configure' $WebEvent)) { return }
+        $u = $WebEvent.Session.Data.user; $b = $WebEvent.Data
+        $enabled  = ("$($b.enabled)" -match '^(true|on|1)$')
+        $recips   = @("$($b.recipients)" -split '[;,\s]+' | Where-Object { $_ })
+        $channels = @(); if ("$($b.chEmail)" -match '^(true|on|1)$') { $channels += 'email' }; if ("$($b.chTeams)" -match '^(true|on|1)$') { $channels += 'teams' }
+        $sev = @(); if ("$($b.sevHigh)" -match '^(true|on|1)$') { $sev += 'High' }; if ("$($b.sevMedium)" -match '^(true|on|1)$') { $sev += 'Medium' }; if ("$($b.sevLow)" -match '^(true|on|1)$') { $sev += 'Low' }
+        $saved = Set-DefenderAlertSettings -Enabled $enabled -Recipients $recips -Channels $channels -MinSeverity $sev
+        Write-Audit $u.username $u.role 'configure' 'defender-alert' @{ enabled=$saved.enabled; recipients=($saved.recipients -join ','); channels=($saved.channels -join ','); minSeverity=($saved.minSeverity -join ',') } 'success' 0 ''
+        Move-PodeResponseUrl -Url '/admin/config'
+    }
+    # Test the Defender alert: shows ALL current active alerts of the configured severities + sends. Runs even if disabled.
+    Add-PodeRoute -Method Post -Path '/admin/defender-alert/test' -ScriptBlock {
+        if (-not (Require 'configure' $WebEvent)) { return }
+        $u = $WebEvent.Session.Data.user
+        $res = try { Invoke-DefenderAlert -Force } catch { @{ ran=$false; error=$_.Exception.Message } }
+        Write-Audit $u.username $u.role 'configure' 'defender-alert-test' @{ active=$res.activeTotal; new=$res.new } ($(if($res.ran){'success'}else{'error'})) 0 ([string]$res.error)
+        Write-PodeJsonResponse -Value @{ ok=[bool]$res.ran; active=$res.activeTotal; new=$res.new; note=$res.note; email=$res.email; teams=$res.teams; error=$res.error }
+    }
+    # Save the Backup-Status list prune settings (enable + retention years).
+    Add-PodeRoute -Method Post -Path '/admin/veeam-history-prune' -ScriptBlock {
+        if (-not (Require 'configure' $WebEvent)) { return }
+        $u = $WebEvent.Session.Data.user; $b = $WebEvent.Data
+        $enabled = ("$($b.enabled)" -match '^(true|on|1)$')
+        $yrs = [int]("$($b.retentionYears)" -replace '\D',''); if ($yrs -lt 1) { $yrs = 3 }
+        $saved = Set-VeeamHistoryPruneSettings -Enabled $enabled -RetentionYears $yrs
+        Write-Audit $u.username $u.role 'configure' 'veeam-history-prune' @{ enabled=$saved.enabled; retentionYears=$saved.retentionYears } 'success' 0 ''
+        Move-PodeResponseUrl -Url '/admin/config'
+    }
+    # Preview the prune (WhatIf) - reports how many rows would be removed, without deleting. Runs even if disabled.
+    Add-PodeRoute -Method Post -Path '/admin/veeam-history-prune/preview' -ScriptBlock {
+        if (-not (Require 'configure' $WebEvent)) { return }
+        $u = $WebEvent.Session.Data.user
+        $res = try { Invoke-VeeamHistoryPrune -WhatIf } catch { @{ ok=$false; error=$_.Exception.Message } }
+        Write-Audit $u.username $u.role 'configure' 'veeam-history-prune-preview' @{ wouldDelete=$res.wouldDelete; cutoff=$res.cutoff } ($(if($res.ok){'success'}else{'error'})) 0 ([string]$res.error)
+        Write-PodeJsonResponse -Value @{ ok=[bool]$res.ok; wouldDelete=$res.wouldDelete; exemptOpen=$res.exemptOpen; cutoff=$res.cutoff; years=$res.years; error=$res.error }
+    }
+    # Run the VB365 coverage check now (test): emails only if there's a gap after exclusions. Runs even if disabled.
+    Add-PodeRoute -Method Post -Path '/admin/vbo-coverage-alert/test' -ScriptBlock {
+        if (-not (Require 'configure' $WebEvent)) { return }
+        $u = $WebEvent.Session.Data.user
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        $res = try { Invoke-Vbo365CoverageAlert -Force } catch { @{ ran=$false; error=$_.Exception.Message } }
+        $sw.Stop()
+        Write-Audit $u.username $u.role 'configure' 'vbo-coverage-alert-test' @{ gap=$res.gap; total=$res.total } ($(if($res.ran){'success'}else{'error'})) $sw.ElapsedMilliseconds ($res.error)
+        Write-PodeJsonResponse -Value @{ ok=[bool]$res.ran; gap=$res.gap; total=$res.total; note=$res.note; email=$res.email; error=$res.error }
     }
     # Run the expiration digest right now (test), regardless of enabled, and report what was sent.
     Add-PodeRoute -Method Post -Path '/admin/expiration-alert/test' -ScriptBlock {
@@ -894,6 +997,9 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
         }
         else {
             $sr = Get-VeeamSessions -Days $days
+            # Merge in VB365 (Veeam Backup for M365) jobs - Get-VboSessions returns the same {ok;last;sessions}
+            # shape, so every table/report below includes them automatically. Best-effort; never breaks the tab.
+            if ($sr.ok) { try { $vbo = Get-VboSessions -Days $days -EnabledOnly; if ($vbo.ok) { $sr.last = @(@($sr.last) + @($vbo.last)); $sr.sessions = @(@($sr.sessions) + @($vbo.sessions)) } } catch {} }
             if (-not $sr.ok) {
                 $err = [string]$sr.error
                 $bodyHtml = "<div class='card'><p class='note' style='margin:0'>Unavailable - see the message above.</p></div>"
@@ -1242,6 +1348,30 @@ Start-PodeServer -RootPath (Join-Path $AppRoot 'web') -Threads 5 {
     # Config; delivers to the configured channels (email / Teams). See Alerts.ps1 Invoke-ExpirationAlert.
     Add-PodeSchedule -Name 'expiration-alert' -Cron '0 8 * * 1' -ScriptBlock {
         try { Invoke-ExpirationAlert | Out-Null } catch {}
+    }
+
+    # VB365 backup-coverage alert: daily 07:30. Emails ONLY when a licensed M365 user has no backup coverage
+    # (after service-account exclusions). No-op unless enabled + Veeam/VB365 configured. See Alerts.ps1.
+    Add-PodeSchedule -Name 'vbo-coverage-alert' -Cron '30 7 * * *' -ScriptBlock {
+        try { Invoke-Vbo365CoverageAlert | Out-Null } catch {}
+    }
+
+    # Backup-Status list prune: keep ~N years of rows (CARF). Weekly, Sunday 03:00. Never deletes Open/
+    # Investigating rows. No-op unless enabled + SharePoint configured. See SharePoint.ps1 Invoke-VeeamHistoryPrune.
+    Add-PodeSchedule -Name 'veeam-history-prune' -Cron '0 3 * * 0' -ScriptBlock {
+        try { if (Test-SharePointConfigured) { Invoke-VeeamHistoryPrune | Out-Null } } catch {}
+    }
+
+    # Defender alert notification: every 2 hours. Pings ONLY on NEW active alerts of the configured severities
+    # (watermark stops repeats). No-op unless enabled + Defender configured. See Alerts.ps1 Invoke-DefenderAlert.
+    Add-PodeSchedule -Name 'defender-alert' -Cron '20 */2 * * *' -ScriptBlock {
+        try { if (Test-DefenderConfigured) { Invoke-DefenderAlert | Out-Null } } catch {}
+    }
+
+    # Operations snapshot: precompute the dashboard tiles so the page renders instantly. 6:30 AM (morning open)
+    # and 4:30 PM (end-of-day close). The Refresh button recomputes on demand. See Ops.ps1.
+    Add-PodeSchedule -Name 'ops-snapshot' -Cron '30 6,16 * * *' -ScriptBlock {
+        try { Update-OpsSnapshot | Out-Null } catch {}
     }
 }
 

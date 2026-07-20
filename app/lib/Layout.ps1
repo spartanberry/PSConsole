@@ -85,6 +85,22 @@ textarea{width:100%;padding:10px;background:var(--input);border:1px solid var(--
 .pill{padding:1px 8px;border-radius:10px;font-size:11px;font-weight:600;display:inline-block}
 .s-complete{background:var(--ok-bg);color:var(--ok-fg)}
 .s-pending-sync{background:var(--hover);color:var(--muted)}
+.ops-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px}
+.ops-tile{border-left:4px solid var(--t-accent);background:var(--t-bg);border-radius:8px;padding:13px 15px}
+.ops-tile .ops-head{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.ops-tile .ops-area{font-weight:600;color:var(--text)}
+.ops-tile .ops-badge{font-size:10px;font-weight:700;letter-spacing:.3px;color:var(--t-accent);white-space:nowrap}
+.ops-tile .ops-line{font-size:17px;margin:7px 0 3px;color:var(--text)}
+.ops-crit{--t-accent:#c92a2a;--t-bg:#fff5f5}
+.ops-warn{--t-accent:#e67700;--t-bg:#fff9db}
+.ops-ok{--t-accent:#2b8a3e;--t-bg:#ebfbee}
+.ops-info{--t-accent:#1971c2;--t-bg:#e7f5ff}
+.ops-na{--t-accent:#868e96;--t-bg:#f1f3f5}
+html[data-theme=dark] .ops-crit{--t-accent:#ff8787;--t-bg:#2a1517}
+html[data-theme=dark] .ops-warn{--t-accent:#ffc078;--t-bg:#2a2410}
+html[data-theme=dark] .ops-ok{--t-accent:#69db7c;--t-bg:#0f2418}
+html[data-theme=dark] .ops-info{--t-accent:#74c0fc;--t-bg:#102437}
+html[data-theme=dark] .ops-na{--t-accent:#adb5bd;--t-bg:#1a1e27}
 .s-partial{background:var(--warn-bg);color:var(--err)}
 .s-manual-needed{background:var(--warn-bg);color:var(--warn-fg)}
 .man{color:var(--warn-fg)}.auto{color:var(--muted)}.fail{color:var(--err)}
@@ -112,6 +128,7 @@ function Get-AppChrome {
     $hd = if ($isAdmin) { @() } else { @(Get-HelpdeskFeatures) }
     $items = @(
         @{ href='/dashboard';           key='dashboard';    label='Dashboard';     icon=$script:PSCIcons.dashboard;    show=$true }
+        @{ href='/admin/operations';    key='operations';   label='Operations';    icon=$script:PSCIcons.reports;      show=($isAdmin -or ($hd -contains 'operations-view')) }
         @{ href='/';                    key='run';          label='Run Scripts';   icon=$script:PSCIcons.run;          show=($isAdmin -or ($hd -contains 'run')) }
         @{ href='/users/new';           key='create';       label='Create User';   icon=$script:PSCIcons.create;       show=($isAdmin -or ($hd -contains 'create-user')) }
         @{ href='/users/onboarding';    key='onboarding';   label='Onboarding';    icon=$script:PSCIcons.onboarding;   show=($isAdmin -or ($hd -contains 'create-user')) }

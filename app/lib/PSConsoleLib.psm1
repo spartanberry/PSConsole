@@ -5,6 +5,7 @@
 . $PSScriptRoot\Layout.ps1
 . $PSScriptRoot\Graph.ps1
 . $PSScriptRoot\Defender.ps1
+. $PSScriptRoot\Xdr.ps1
 . $PSScriptRoot\GraphWrite.ps1
 . $PSScriptRoot\ExchangeOnline.ps1
 . $PSScriptRoot\UserProvision.ps1
@@ -14,9 +15,11 @@
 . $PSScriptRoot\Reports.ps1
 . $PSScriptRoot\Alerts.ps1
 . $PSScriptRoot\Veeam.ps1
+. $PSScriptRoot\Vbo.ps1
 . $PSScriptRoot\SharePoint.ps1
 . $PSScriptRoot\Inventory.ps1
 . $PSScriptRoot\Unifi.ps1
 . $PSScriptRoot\HyperV.ps1
 . $PSScriptRoot\Sdp.ps1
 . $PSScriptRoot\Catalog.ps1
+. $PSScriptRoot\Ops.ps1

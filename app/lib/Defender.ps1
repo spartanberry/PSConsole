@@ -66,3 +66,37 @@ function Format-MdeDate {
     if (-not $Iso) { return '' }
     try { ([DateTimeOffset]::Parse([string]$Iso)).LocalDateTime.ToString('MM/dd/yyyy h:mm tt') } catch { [string]$Iso }
 }
+
+# Defender for Endpoint alerts (needs the WindowsDefenderATP Alert.Read.All app permission, in addition to
+# Machine.Read.All). Returns @{ ok; error; alerts=@(...) } - normalized, newest first, dates rendered local.
+# -ActiveOnly keeps New/InProgress; -Severity filters (e.g. 'High','Medium'). Never throws.
+function Get-DefenderAlerts {
+    param([int]$Days = 30, [switch]$ActiveOnly, [string[]]$Severity)
+    if (-not (Test-DefenderConfigured)) { return @{ ok = $false; error = 'Defender add-on is not configured (data\defender.config.json).'; alerts = @() } }
+    $since = (Get-Date).AddDays(-[math]::Abs($Days)).ToString('yyyy-MM-ddTHH:mm:ssZ')
+    try {
+        $raw = @(Invoke-Mde "/api/alerts?`$filter=alertCreationTime ge $since")
+    } catch {
+        $m = $_.Exception.Message; if ($_.ErrorDetails.Message) { $m = $_.ErrorDetails.Message }
+        return @{ ok = $false; error = $m; alerts = @() }
+    }
+    $sev = @($Severity)
+    $rows = New-Object System.Collections.Generic.List[object]
+    foreach ($a in ($raw | Sort-Object @{ e = { try { [datetimeoffset]$_.alertCreationTime } catch { [datetimeoffset]::MinValue } }; Descending = $true })) {
+        $st = [string]$a.status
+        if ($ActiveOnly -and $st -ne 'New' -and $st -ne 'InProgress') { continue }
+        if ($sev.Count -and ($sev -notcontains [string]$a.severity)) { continue }
+        $rows.Add([pscustomobject]@{
+            Severity        = [string]$a.severity
+            Status          = $st
+            Title           = [string]$a.title
+            Category        = [string]$a.category
+            Device          = [string]$a.computerDnsName
+            DetectionSource = [string]$a.detectionSource
+            Created         = Format-MdeDate $a.alertCreationTime
+            CreatedRaw      = [string]$a.alertCreationTime
+            Id              = [string]$a.id
+        })
+    }
+    @{ ok = $true; alerts = $rows.ToArray() }
+}
