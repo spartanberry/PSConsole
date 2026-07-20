@@ -123,6 +123,7 @@ function Invoke-Authenticate([string]$Username, [string]$Password) {
 # Onboarding rides on 'create-user'. Order is the display order on the Config page.
 function Get-HelpdeskFeatureCatalog {
     @(
+        [pscustomobject]@{ action = 'operations-view';   label = 'Operations Dashboard' }
         [pscustomobject]@{ action = 'run';               label = 'Run Scripts' }
         [pscustomobject]@{ action = 'create-user';       label = 'Create User / Onboarding' }
         [pscustomobject]@{ action = 'decommission-user'; label = 'Decommission User' }

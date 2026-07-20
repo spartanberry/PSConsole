@@ -1,0 +1,12 @@
+$($data.head)
+$($data.open)
+$($data.bodyHtml)
+<script>
+function opsRefresh(btn){
+  btn.disabled=true; var t=btn.textContent; btn.textContent='Refreshing (~30s)...';
+  fetch('/admin/operations/refresh',{method:'POST'}).then(function(r){return r.json();}).then(function(d){
+    location.reload();
+  }).catch(function(){ btn.disabled=false; btn.textContent=t; });
+}
+</script>
+$($data.close)

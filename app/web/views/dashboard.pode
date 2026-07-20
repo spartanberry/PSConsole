@@ -138,5 +138,17 @@ function renderAudit(rows,from,to){
 }
 // Builds the category list, then applies the (initially empty) filter, which calls onScriptChange().
 initScriptNav();
+// Deep-link: /?script=<file>[&params=K=V;...] pre-selects that script and runs it immediately. Used by the
+// Operations dashboard "view" links so a tile jumps straight into its detail. No-ops safely if the script
+// isn't visible to this role.
+(function(){
+ var qs=new URLSearchParams(location.search); var s=qs.get('script'); if(!s) return;
+ document.getElementById('filter').value=s; applyScriptFilter();
+ var sel=document.getElementById('script');
+ for(var i=0;i<sel.options.length;i++){ if(sel.options[i].value===s){ sel.selectedIndex=i; break; } }
+ var p=qs.get('params'); if(p!=null) document.getElementById('params').value=p;
+ onScriptChange();
+ if(sel.value===s){ run(); }
+})();
 </script>
 $($data.close)

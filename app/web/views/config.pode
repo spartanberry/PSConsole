@@ -78,6 +78,91 @@ $(if($data.hypervOn){
 </div>
 
 <div class="card" style="max-width:660px">
+  <h3>VB365 backup-coverage alert</h3>
+  <p class="note">Emails when a <b>licensed, active</b> Microsoft 365 user is <b>not</b> protected by any Veeam Backup for M365 job, so nobody's data silently goes unbacked. Checked daily (07:30); an email is sent <b>only when there's a gap</b> (no all-clear noise). $(if(-not $data.veeamOn){'<b>Requires the Veeam/VB365 add-on</b> (data\veeam.config.json).'})</p>
+  <form method="post" action="/admin/vbo-coverage-alert">
+    <label style="display:inline-flex;align-items:center;gap:8px"><input type="checkbox" name="enabled" value="true" $(if($data.vboCoverageAlert.enabled){'checked'}) style="width:auto"> Enable the daily coverage-gap alert</label>
+    <label style="margin-top:8px">Email recipients (comma separated) $(if(-not $data.smtpConfigured){'<span class="note">(SMTP not configured)</span>'})</label>
+    <input name="recipients" value="$(ConvertTo-PSCEncoded (@($data.vboCoverageAlert.recipients) -join ', '))" style="width:100%">
+    <label style="margin-top:8px">Exclude these accounts <span class="note">- one display name per line (service/integration accounts you don't back up)</span></label>
+    <textarea name="exclude" rows="4" style="width:100%">$(ConvertTo-PSCEncoded (@($data.vboCoverageAlert.exclude) -join "`n"))</textarea>
+    <button type="submit" style="margin-top:10px">Save</button>
+  </form>
+  <button type="button" onclick="testVboAlert(this)" class="secondary" style="margin-top:10px">Run check now (test)</button>
+  <span id="vboTestResult" class="note" style="margin-left:10px"></span>
+  <script>
+    function testVboAlert(btn){
+      var out=document.getElementById('vboTestResult'); btn.disabled=true; out.textContent='Checking...';
+      fetch('/admin/vbo-coverage-alert/test',{method:'POST'}).then(function(r){return r.json();}).then(function(d){
+        btn.disabled=false;
+        if(!d.ok){ out.textContent='Failed: '+(d.error||d.note||'unknown'); return; }
+        var parts=['gap: '+d.gap+' of '+d.total+' licensed-unprotected'];
+        if(d.email){ parts.push('email: '+(d.email.ok?'sent':((d.email.error||d.email.note)||'not sent'))); }
+        else if(d.note){ parts.push(d.note); }
+        out.textContent=parts.join(' | ');
+      }).catch(function(e){ btn.disabled=false; out.textContent='Error: '+e; });
+    }
+  </script>
+</div>
+
+<div class="card" style="max-width:660px">
+  <h3>Defender alerts</h3>
+  <p class="note">Notifies (email / Teams) <b>only when a new active Microsoft Defender for Endpoint alert appears</b> of the selected severities - checked every 2 hours, with a watermark so the same alert is never repeated. Silent when all's clear. $(if(-not $data.defenderOn){'<b>Requires the Defender add-on</b> (data\defender.config.json + WindowsDefenderATP Alert.Read.All).'})</p>
+  <form method="post" action="/admin/defender-alert">
+    <label style="display:inline-flex;align-items:center;gap:8px"><input type="checkbox" name="enabled" value="true" $(if($data.defenderAlert.enabled){'checked'}) style="width:auto"> Enable Defender alerting</label>
+    <label style="margin-top:8px">Alert on these severities</label>
+    <label style="display:inline-flex;align-items:center;gap:8px;font-weight:normal"><input type="checkbox" name="sevHigh" value="true" $(if($data.defenderAlert.minSeverity -contains 'High'){'checked'}) style="width:auto"> High</label>
+    <label style="display:inline-flex;align-items:center;gap:8px;font-weight:normal"><input type="checkbox" name="sevMedium" value="true" $(if($data.defenderAlert.minSeverity -contains 'Medium'){'checked'}) style="width:auto"> Medium</label>
+    <label style="display:inline-flex;align-items:center;gap:8px;font-weight:normal"><input type="checkbox" name="sevLow" value="true" $(if($data.defenderAlert.minSeverity -contains 'Low'){'checked'}) style="width:auto"> Low</label>
+    <label style="margin-top:8px">Channels</label>
+    <label style="display:inline-flex;align-items:center;gap:8px;font-weight:normal"><input type="checkbox" name="chEmail" value="true" $(if($data.defenderAlert.channels -contains 'email'){'checked'}) style="width:auto"> Email $(if(-not $data.smtpConfigured){'<span class="note">(SMTP not configured)</span>'})</label>
+    <label style="display:inline-flex;align-items:center;gap:8px;font-weight:normal"><input type="checkbox" name="chTeams" value="true" $(if($data.defenderAlert.channels -contains 'teams'){'checked'}) style="width:auto"> Teams $(if(-not $data.teamsConfigured){'<span class="note">(Teams webhook not configured)</span>'})</label>
+    <label style="margin-top:8px">Email recipients (comma separated)</label>
+    <input name="recipients" value="$(ConvertTo-PSCEncoded (@($data.defenderAlert.recipients) -join ', '))" style="width:100%">
+    <button type="submit" style="margin-top:10px">Save</button>
+  </form>
+  <button type="button" onclick="testDefAlert(this)" class="secondary" style="margin-top:10px">Test now</button>
+  <span id="defAlertResult" class="note" style="margin-left:10px"></span>
+  <script>
+    function testDefAlert(btn){
+      var out=document.getElementById('defAlertResult'); btn.disabled=true; out.textContent='Checking...';
+      fetch('/admin/defender-alert/test',{method:'POST'}).then(function(r){return r.json();}).then(function(d){
+        btn.disabled=false;
+        if(!d.ok){ out.textContent='Failed: '+(d.error||d.note||'unknown'); return; }
+        var parts=[d.active+' active alert(s)'];
+        if(d.email){ parts.push('email: '+(d.email.ok?'sent':((d.email.error||d.email.note)||'not sent'))); }
+        if(d.teams){ parts.push('teams: '+(d.teams.ok?'sent':((d.teams.error||d.teams.note)||'not sent'))); }
+        if(!d.email && !d.teams && d.note){ parts.push(d.note); }
+        out.textContent=parts.join(' | ');
+      }).catch(function(e){ btn.disabled=false; out.textContent='Error: '+e; });
+    }
+  </script>
+</div>
+
+<div class="card" style="max-width:660px">
+  <h3>Backup Status list retention</h3>
+  <p class="note">Keeps the SharePoint "Backup Status" list bounded by deleting rows older than the retention window (weekly, Sunday 03:00) - so the CARF log stays at a fixed size instead of growing forever. <b>Never deletes rows still Open/Investigating</b>, and never touches the actual Veeam backups (only this status log). $(if(-not $data.sharePointOn){'<b>Requires the SharePoint add-on.</b>'})</p>
+  <form method="post" action="/admin/veeam-history-prune">
+    <label style="display:inline-flex;align-items:center;gap:8px"><input type="checkbox" name="enabled" value="true" $(if($data.veeamHistoryPrune.enabled){'checked'}) style="width:auto"> Enable the weekly prune</label>
+    <label style="margin-top:8px">Keep this many years (CARF = 3)</label>
+    <input name="retentionYears" value="$(ConvertTo-PSCEncoded ([string]$data.veeamHistoryPrune.retentionYears))" style="width:100%">
+    <button type="submit" style="margin-top:10px">Save</button>
+  </form>
+  <button type="button" onclick="testPrune(this)" class="secondary" style="margin-top:10px">Preview (what would be deleted)</button>
+  <span id="pruneResult" class="note" style="margin-left:10px"></span>
+  <script>
+    function testPrune(btn){
+      var out=document.getElementById('pruneResult'); btn.disabled=true; out.textContent='Checking...';
+      fetch('/admin/veeam-history-prune/preview',{method:'POST'}).then(function(r){return r.json();}).then(function(d){
+        btn.disabled=false;
+        if(!d.ok){ out.textContent='Failed: '+(d.error||'unknown'); return; }
+        out.textContent='Would delete '+d.wouldDelete+' row(s) older than '+d.cutoff+' ('+d.years+'yr)'+(d.exemptOpen?(' - '+d.exemptOpen+' open/investigating kept'):'');
+      }).catch(function(e){ btn.disabled=false; out.textContent='Error: '+e; });
+    }
+  </script>
+</div>
+
+<div class="card" style="max-width:660px">
   <h3>Teams event notifications</h3>
   <p class="note">Also post a Teams card for these events (in addition to the existing email). Uses the reusable Teams channel; $(if($data.teamsConfigured){'the channel is <b>configured</b>.'}else{'<b>configure it first</b> with <code>graph-setup\Set-TeamsConfig.ps1</code> - until then these post nothing.'})</p>
   <form method="post" action="/admin/teams-events">

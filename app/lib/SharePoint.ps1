@@ -147,7 +147,11 @@ function Sync-VeeamToSharePoint {
     try {
         $sr = Get-VeeamSessions -Days $Days
         if (-not $sr.ok) { return @{ ok = $false; error = "Veeam query failed: $($sr.error)" } }
-        $daily = @(Get-VeeamDailyRows -SessionResult $sr)
+        # Server (VBR) daily rows, plus the VB365 job's daily rows (tagged Office 365 so the view sort can
+        # order it after the server jobs). Get-VboSessions returns the same shape, so Get-VeeamDailyRows works.
+        $work = @()
+        foreach ($r in @(Get-VeeamDailyRows -SessionResult $sr)) { $work += [pscustomobject]@{ row = $r; source = $null } }
+        try { $vbo = Get-VboSessions -Days $Days -EnabledOnly; if ($vbo.ok) { foreach ($r in @(Get-VeeamDailyRows -SessionResult $vbo)) { $work += [pscustomobject]@{ row = $r; source = 'Office 365' } } } } catch {}
         $ctx   = Get-SPContext
         $since = (Get-Date).Date.AddDays(-([Math]::Abs($Days) + 2)).ToString('yyyy-MM-ddT00:00:00Z')
         $existing = @{}
@@ -158,12 +162,14 @@ function Sync-VeeamToSharePoint {
         }
         $now = (Get-Date).ToString('yyyy-MM-dd HH:mm')
         $created = 0; $updated = 0
-        foreach ($r in $daily) {
+        foreach ($w in $work) {
+            $r        = $w.row
             $ds       = $r.Date.ToString('yyyy-MM-dd')
             $needsRem = ($r.Result -eq 'Failed')
             $item     = $existing["$($r.Job)|$ds"]
             if ($item) {
                 $fields = @{ VeeamResult = $r.Result; SuccessCount = $r.Success; WarningCount = $r.Warning; FailedCount = $r.Failed; LastSynced = $now }
+                if ($w.source) { $fields['Source'] = $w.source }
                 $cur = [string]$item.fields.RemStatus
                 if ($needsRem -and ($cur -eq 'N/A' -or [string]::IsNullOrEmpty($cur))) { $fields['RemStatus'] = 'Open' }
                 Invoke-GraphWrite -Method PATCH -Uri "/sites/$($ctx.siteId)/lists/$($ctx.listId)/items/$($item.id)/fields" -Body $fields | Out-Null
@@ -176,11 +182,12 @@ function Sync-VeeamToSharePoint {
                     ReviewDue = (Get-ReviewDueDate $r.Date).ToString('yyyy-MM-dd')
                     RemStatus = $(if ($needsRem) { 'Open' } else { 'N/A' }); LastSynced = $now
                 }
+                if ($w.source) { $fields['Source'] = $w.source }
                 Invoke-GraphWrite -Method POST -Uri "/sites/$($ctx.siteId)/lists/$($ctx.listId)/items" -Body @{ fields = $fields } | Out-Null
                 $created++
             }
         }
-        return @{ ok = $true; created = $created; updated = $updated; days = $daily.Count }
+        return @{ ok = $true; created = $created; updated = $updated; days = $work.Count }
     }
     catch { return @{ ok = $false; error = (Get-GraphError $_) } }
 }
@@ -221,6 +228,94 @@ function Initialize-VeeamHistory {
         $res = Invoke-GraphBatchWrite -Requests $reqs
         $script:SPCtx = $ctx
         return @{ ok = $true; created = $res.ok; failed = $res.failed; total = $reqs.Count; jobs = $jobs.Count }
+    }
+    catch { return @{ ok = $false; error = (Get-GraphError $_) } }
+}
+
+# ONE-TIME BACKFILL for the VB365 (Office 365) job: a daily Success row from the LIST'S earliest date through
+# today, tagged Source='Office 365', so its history lines up with the server jobs' range. Idempotent - skips any
+# Job|Date already present. -WhatIf returns the row count without writing. The daily Sync-VeeamToSharePoint then
+# overwrites the recent window with real results.
+function Initialize-Vbo365History {
+    param([switch]$WhatIf)
+    if (-not (Test-SharePointConfigured)) { return @{ ok = $false; error = 'SharePoint add-on is not configured.' } }
+    if (-not (Test-VeeamConfigured))      { return @{ ok = $false; error = 'Veeam/VB365 add-on is not configured.' } }
+    try {
+        $vbo = Get-VboSessions -Days 8 -EnabledOnly
+        if (-not $vbo.ok) { return @{ ok = $false; error = "VB365 query failed: $($vbo.error)" } }
+        $jobs = @(@(Get-VeeamLastJobStatus $vbo) | ForEach-Object { [string]$_.Job } | Where-Object { $_ } | Sort-Object -Unique)
+        if (-not $jobs.Count) { return @{ ok = $false; error = 'No enabled VB365 job found to backfill.' } }
+        $ctx = Get-SPContext
+        $existing = @{}; $earliest = $null
+        foreach ($it in (Get-SPListItems)) {
+            $t = [string]$it.fields.Title; $bd = ''
+            try { if ($it.fields.BackupDate) { $d = [datetime]$it.fields.BackupDate; $bd = $d.ToString('yyyy-MM-dd'); if (-not $earliest -or $d -lt $earliest) { $earliest = $d } } } catch {}
+            if ($t -and $bd) { $existing["$t|$bd"] = $true }
+        }
+        if (-not $earliest) { return @{ ok = $false; error = 'List is empty - nothing to align to.' } }
+        $today = (Get-Date).Date; $start = $earliest.Date; $now = (Get-Date).ToString('yyyy-MM-dd HH:mm')
+        $reqs = New-Object System.Collections.Generic.List[object]
+        for ($d = $start; $d -le $today; $d = $d.AddDays(1)) {
+            $ds     = $d.ToString('yyyy-MM-dd')
+            $review = (Get-ReviewDueDate $d).ToString('yyyy-MM-dd')
+            foreach ($job in $jobs) {
+                if ($existing.ContainsKey("$job|$ds")) { continue }
+                $fields = @{ Title = $job; BackupDate = $ds; BackupYear = $d.Year; VeeamResult = 'Success'; ReviewDue = $review; RemStatus = 'N/A'; LastSynced = $now; Source = 'Office 365' }
+                $reqs.Add(@{ method = 'POST'; url = "/sites/$($ctx.siteId)/lists/$($ctx.listId)/items"; body = @{ fields = $fields } })
+            }
+        }
+        if ($WhatIf) { return @{ ok = $true; whatIf = $true; wouldCreate = $reqs.Count; jobs = $jobs.Count; from = $start.ToString('yyyy-MM-dd') } }
+        $res = Invoke-GraphBatchWrite -Requests $reqs
+        return @{ ok = $true; created = $res.ok; failed = $res.failed; total = $reqs.Count; jobs = $jobs.Count; from = $start.ToString('yyyy-MM-dd') }
+    }
+    catch { return @{ ok = $false; error = (Get-GraphError $_) } }
+}
+
+# ---- 3-year rolling prune (keeps the CARF log bounded without touching schema or the actual Veeam backups) ----
+# Settings live under `veeamHistoryPrune`: { enabled:bool, retentionYears:int(3) }.
+function Get-VeeamHistoryPruneSettings {
+    $def = [ordered]@{ enabled = $false; retentionYears = 3 }
+    $cfg = Get-Store config
+    if ($cfg -and ($cfg.PSObject.Properties.Name -contains 'veeamHistoryPrune') -and $cfg.veeamHistoryPrune) {
+        $s = $cfg.veeamHistoryPrune
+        if ($null -ne $s.enabled)        { $def.enabled        = [bool]$s.enabled }
+        if ($s.retentionYears)           { $def.retentionYears = [int]$s.retentionYears }
+    }
+    $def
+}
+function Set-VeeamHistoryPruneSettings {
+    param([bool]$Enabled, [int]$RetentionYears)
+    if ($RetentionYears -lt 1)  { $RetentionYears = 3 }
+    if ($RetentionYears -gt 30) { $RetentionYears = 30 }
+    $val = [ordered]@{ enabled = [bool]$Enabled; retentionYears = $RetentionYears }
+    $cfg = Get-Store config
+    $cfg | Add-Member -NotePropertyName veeamHistoryPrune -NotePropertyValue $val -Force
+    Set-Store config $cfg
+    $val
+}
+
+# Delete Backup-Status rows older than the retention window. NEVER deletes rows still Open/Investigating (so an
+# unresolved failure is never auto-purged). -WhatIf previews the count without deleting. A scheduled call is a
+# no-op unless enabled; -WhatIf always previews regardless. Returns @{ ok; wouldDelete/deleted; exemptOpen; cutoff }.
+function Invoke-VeeamHistoryPrune {
+    param([switch]$WhatIf, [int]$Years)
+    if (-not (Test-SharePointConfigured)) { return @{ ok = $false; error = 'SharePoint add-on is not configured.' } }
+    $s = Get-VeeamHistoryPruneSettings
+    if (-not $WhatIf -and -not $s.enabled) { return @{ ok = $false; note = 'disabled' } }
+    $yrs = if ($Years -ge 1) { $Years } else { [int]$s.retentionYears }
+    if ($yrs -lt 1) { $yrs = 3 }
+    try {
+        $cutoff    = (Get-Date).Date.AddYears(-$yrs)
+        $cutoffStr = $cutoff.ToString('yyyy-MM-ddT00:00:00Z')
+        $ctx = Get-SPContext
+        $old = @(Get-SPListItems -Filter "fields/BackupDate lt '$cutoffStr'")
+        $del = @($old | Where-Object { $rs = [string]$_.fields.RemStatus; $rs -ne 'Open' -and $rs -ne 'Investigating' })
+        $exempt = @($old).Count - @($del).Count
+        if ($WhatIf) { return @{ ok = $true; whatIf = $true; wouldDelete = @($del).Count; exemptOpen = $exempt; cutoff = $cutoff.ToString('yyyy-MM-dd'); years = $yrs } }
+        $reqs = New-Object System.Collections.Generic.List[object]
+        foreach ($it in $del) { $reqs.Add(@{ method = 'DELETE'; url = "/sites/$($ctx.siteId)/lists/$($ctx.listId)/items/$($it.id)" }) }
+        $res = if ($reqs.Count) { Invoke-GraphBatchWrite -Requests $reqs } else { @{ ok = 0; failed = 0 } }
+        return @{ ok = $true; deleted = $res.ok; failed = $res.failed; total = $reqs.Count; exemptOpen = $exempt; cutoff = $cutoff.ToString('yyyy-MM-dd'); years = $yrs }
     }
     catch { return @{ ok = $false; error = (Get-GraphError $_) } }
 }
@@ -292,6 +387,10 @@ function Get-SPVeeamDesiredColumns {
         @{ name = 'RemediatedBy'; spec = @{ text     = @{} } }
         @{ name = 'RemediatedAt'; spec = @{ text     = @{} } }
         @{ name = 'LastSynced';   spec = @{ text     = @{} } }
+        # Distinguishes VBR (server) jobs from the VB365 job. Only the Office 365 rows are tagged; server rows
+        # are left blank, so a "BackupDate desc, Source asc" view sort puts the O365 row last within each day
+        # without mass-editing the existing server rows. See Sync-VeeamToSharePoint + Initialize-Vbo365History.
+        @{ name = 'Source';       spec = @{ choice   = @{ choices = @('Server', 'Office 365'); displayAs = 'dropDownMenu' } } }
     )
 }
 
