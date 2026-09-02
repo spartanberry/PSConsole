@@ -13,6 +13,9 @@ service/*.wrapper.log
 # Build output
 dist/
 
+# Local screenshots, exports, and troubleshooting artifacts
+tmp/
+
 # General
 *.log
 *.tmp
